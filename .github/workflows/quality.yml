@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -45,6 +46,17 @@ jobs:
 
       - name: Run quality gate
         run: ./gradlew check --no-daemon --stacktrace
+
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() && hashFiles('app/build/reports/jacoco/test/jacocoTestReport.xml') != '' }}
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          disable_search: true
+          fail_ci_if_error: true
+          files: app/build/reports/jacoco/test/jacocoTestReport.xml
+          flags: unit-tests
+          name: jacoco
+          use_oidc: true
 
       - name: Upload quality reports
         if: ${{ always() }}
