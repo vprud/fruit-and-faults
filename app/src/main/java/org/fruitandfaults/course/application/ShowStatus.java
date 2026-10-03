@@ -161,8 +161,7 @@ public final class ShowStatus {
     return List.copyOf(result);
   }
 
-  private static void requireOwnership(List<Lesson> opened, ManagedFiles managed)
-      throws IOException {
+  static void requireOwnership(List<Lesson> opened, ManagedFiles managed) throws IOException {
     Set<ManagedFile> expected = new LinkedHashSet<>();
     for (Lesson lesson : opened) {
       for (var asset : lesson.assets()) {

@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.fruitandfaults.course.domain.Course;
+import org.fruitandfaults.course.domain.CourseCompatibility;
 import org.fruitandfaults.progress.domain.CourseProgress;
 
 /** Produces only ordered route titles and progress states, without disclosing lesson content. */
@@ -38,17 +39,6 @@ public final class ListLessons {
   }
 
   static void requireCompatible(Course installed, CourseProgress progress) {
-    Course saved = progress.course();
-    if (!installed.id().equals(saved.id())
-        || installed.contentVersion() < saved.contentVersion()
-        || installed.lessonOrder().size() < saved.lessonOrder().size()
-        || !installed
-            .lessonOrder()
-            .subList(0, saved.lessonOrder().size())
-            .equals(saved.lessonOrder())
-        || (installed.contentVersion() == saved.contentVersion() && !installed.equals(saved))) {
-      throw new IllegalArgumentException(
-          "Expected matching or append-compatible installed course content.");
-    }
+    CourseCompatibility.requirePrefix(installed, progress.course());
   }
 }

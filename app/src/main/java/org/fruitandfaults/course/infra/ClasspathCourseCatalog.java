@@ -21,6 +21,7 @@ import org.fruitandfaults.course.domain.AssetId;
 import org.fruitandfaults.course.domain.AssetPolicy;
 import org.fruitandfaults.course.domain.CompletionCriterion;
 import org.fruitandfaults.course.domain.Course;
+import org.fruitandfaults.course.domain.CourseCompatibility;
 import org.fruitandfaults.course.domain.CourseId;
 import org.fruitandfaults.course.domain.Lesson;
 import org.fruitandfaults.course.domain.LessonAsset;
@@ -69,8 +70,9 @@ public final class ClasspathCourseCatalog implements CourseCatalog, CourseAssets
             "Expected integer contentVersion; observed " + course.required("contentVersion") + ".",
             failure);
       }
-      if (version != 1) {
-        throw new IllegalArgumentException("Expected contentVersion 1; observed " + version + ".");
+      if (version < 1) {
+        throw new IllegalArgumentException(
+            "Expected positive contentVersion; observed " + version + ".");
       }
       String title = course.required("title");
       List<LessonId> order = course.list("lessonOrder").stream().map(LessonId::new).toList();
@@ -92,9 +94,52 @@ public final class ClasspathCourseCatalog implements CourseCatalog, CourseAssets
   }
 
   @Override
+  public List<Course> supportedCourses() {
+    Course installed = load();
+    String resource = root + "/compatibility.properties";
+    try (InputStream input = classLoader.getResourceAsStream(resource)) {
+      if (input == null) return List.of(installed);
+      byte[] raw = input.readNBytes(MAX_RESOURCE_BYTES + 1);
+      if (raw.length > MAX_RESOURCE_BYTES)
+        throw new IllegalArgumentException("Oversized compatibility manifest.");
+      Properties values = new Properties();
+      values.load(
+          new StringReader(
+              StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(raw)).toString()));
+      BundleProperties metadata = new BundleProperties(resource, values);
+      List<String> versions = metadata.list("versions");
+      Set<String> keys = new HashSet<>(Set.of("versions"));
+      List<Course> supported = new ArrayList<>();
+      supported.add(installed);
+      for (String version : versions) {
+        int number = Integer.parseInt(version);
+        if (number < 1 || number >= installed.contentVersion())
+          throw new IllegalArgumentException(
+              "Expected a strictly earlier supported course content version.");
+        String key = "version." + version + ".root";
+        keys.add(key);
+        Course historical = new ClasspathCourseCatalog(metadata.required(key), classLoader).load();
+        if (historical.contentVersion() != number)
+          throw new IllegalArgumentException(
+              "Historical version declaration disagrees with its snapshot.");
+        CourseCompatibility.requirePrefix(installed, historical);
+        supported.add(historical);
+      }
+      metadata.onlyKeys(keys);
+      return List.copyOf(supported);
+    } catch (IOException | IllegalArgumentException failure) {
+      throw invalid(resource, "Expected explicit compatible historical course contracts", failure);
+    }
+  }
+
+  @Override
   public byte[] load(LessonAsset asset) {
     String resource = relativePath(asset.resourcePath());
-    if (!resource.startsWith(root + "/")) {
+    if (!resource.startsWith(root + "/")
+        && supportedCourses().stream()
+            .flatMap(course -> course.lessons().stream())
+            .flatMap(lesson -> lesson.assets().stream())
+            .noneMatch(asset::equals)) {
       throw new IllegalArgumentException("Expected an asset within the installed course bundle.");
     }
     byte[] raw = bytes(resource);

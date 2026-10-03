@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -176,6 +177,158 @@ class JacksonProgressCodecTest {
     ProgressReadException failure =
         assertThrows(ProgressReadException.class, () -> codec.encode(oversized));
     assertEquals(ProgressReadException.Reason.INVALID_STATE, failure.reason());
+  }
+
+  @Test
+  void trustedHistoricalPrefixLoadsWithoutRewritingOrRebasingItsVersion() throws IOException {
+    Course older =
+        new Course(
+            course.id(),
+            1,
+            course.title(),
+            course.lessonOrder().subList(0, 1),
+            course.lessons().subList(0, 1));
+    Course newer =
+        new Course(course.id(), 2, course.title(), course.lessonOrder(), course.lessons());
+    CourseProgress terminal =
+        CourseProgress.opening(older, null)
+            .advance(older.lessonOrder().getFirst(), "compile-before-tests", null)
+            .progress();
+    byte[] oldBytes = new JacksonProgressCodec(older).encode(terminal);
+    var compatible = new JacksonProgressCodec(newer, List.of(older));
+    assertEquals(terminal, compatible.decode(oldBytes));
+    assertEquals(terminal, compatible.decode(compatible.encode(terminal)));
+    assertEquals(1, compatible.decode(oldBytes).course().contentVersion());
+    assertThrows(
+        ProgressReadException.class, () -> new JacksonProgressCodec(newer).decode(oldBytes));
+    assertThrows(
+        ProgressReadException.class,
+        () ->
+            compatible.decode(
+                new String(oldBytes, StandardCharsets.UTF_8)
+                    .replace("\"courseContentVersion\" : 1", "\"courseContentVersion\" : 3")
+                    .getBytes(StandardCharsets.UTF_8)));
+    assertThrows(
+        ProgressReadException.class,
+        () ->
+            compatible.decode(
+                new String(oldBytes, StandardCharsets.UTF_8)
+                    .replace("first-run", "unknown-lesson")
+                    .getBytes(StandardCharsets.UTF_8)));
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "question",
+        "criterion",
+        "asset",
+        "order",
+        "option",
+        "accepted-option",
+        "asset-id",
+        "asset-policy",
+        "asset-path",
+        "criterion-description",
+        "artifact"
+      })
+  void rejectsChangedHistoricalContractsRatherThanTrustingStableIds(String changed)
+      throws IOException {
+    Course older =
+        new Course(
+            course.id(),
+            1,
+            course.title(),
+            course.lessonOrder().subList(0, 1),
+            course.lessons().subList(0, 1));
+    var first = course.lessons().getFirst();
+    var firstAsset = first.assets().getFirst();
+    var alteredAssets = new java.util.ArrayList<>(first.assets());
+    if (changed.startsWith("asset"))
+      alteredAssets.set(
+          0,
+          new org.fruitandfaults.course.domain.LessonAsset(
+              changed.equals("asset-id")
+                  ? new org.fruitandfaults.course.domain.AssetId("changed-asset")
+                  : firstAsset.id(),
+              changed.equals("asset-path") ? "changed/path.txt" : firstAsset.relativePath(),
+              firstAsset.resourcePath(),
+              changed.equals("asset") ? "0".repeat(64) : firstAsset.sha256(),
+              changed.equals("asset-policy")
+                  ? org.fruitandfaults.course.domain.AssetPolicy.EDITABLE_TEMPLATE
+                  : firstAsset.policy()));
+    var options = new java.util.ArrayList<>(first.question().options());
+    if (changed.equals("option")) {
+      var wrong =
+          options.stream()
+              .filter(option -> !option.id().equals(first.question().correctOptionId()))
+              .findFirst()
+              .orElseThrow();
+      options.set(
+          options.indexOf(wrong),
+          new org.fruitandfaults.course.domain.ReflectionOption(
+              "changed-option", wrong.text(), wrong.feedback()));
+    }
+    var question =
+        new org.fruitandfaults.course.domain.ReflectionQuestion(
+            changed.equals("question") ? "changed-question" : first.question().id(),
+            first.question().prompt(),
+            options,
+            changed.equals("accepted-option")
+                ? options.stream()
+                    .filter(option -> !option.id().equals(first.question().correctOptionId()))
+                    .findFirst()
+                    .orElseThrow()
+                    .id()
+                : first.question().correctOptionId());
+    var modified =
+        new org.fruitandfaults.course.domain.Lesson(
+            first.id(),
+            first.title(),
+            first.goal(),
+            first.prerequisites(),
+            alteredAssets,
+            changed.equals("artifact") ? List.of("changed/path.txt") : first.expectedArtifacts(),
+            changed.equals("criterion") || changed.equals("criterion-description")
+                ? List.of(
+                    new org.fruitandfaults.course.domain.CompletionCriterion(
+                        changed.equals("criterion")
+                            ? "changed-check"
+                            : first.completionCriteria().getFirst().id(),
+                        "Changed contract"))
+                : first.completionCriteria(),
+            first.instructions(),
+            first.hints(),
+            question,
+            first.recommendedCommitMessage());
+    Course newer =
+        changed.equals("order")
+            ? new Course(
+                course.id(),
+                2,
+                course.title(),
+                List.of(course.lessonOrder().get(1)),
+                List.of(
+                    new org.fruitandfaults.course.domain.Lesson(
+                        course.lessons().get(1).id(),
+                        first.title(),
+                        first.goal(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        first.completionCriteria(),
+                        first.instructions(),
+                        first.hints(),
+                        first.question(),
+                        first.recommendedCommitMessage())))
+            : new Course(
+                course.id(),
+                2,
+                course.title(),
+                course.lessonOrder().subList(0, 1),
+                List.of(modified));
+    assertThrows(
+        IllegalArgumentException.class, () -> new JacksonProgressCodec(newer, List.of(older)));
   }
 
   private void rejects(String json, ProgressReadException.Reason reason) {

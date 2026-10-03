@@ -51,6 +51,61 @@ class ClasspathCourseCatalogTest {
   }
 
   @Test
+  void laterBundlesMustExplicitlyShipTrustedHistoricalContracts() {
+    ClassLoader loader =
+        new ClassLoader(getClass().getClassLoader()) {
+          @Override
+          public @Nullable InputStream getResourceAsStream(String name) {
+            if (name.equals("course-new/compatibility.properties"))
+              return new ByteArrayInputStream(
+                  "versions=1\nversion.1.root=course-valid\n".getBytes(StandardCharsets.UTF_8));
+            if (name.startsWith("course-new/")) {
+              try (var input =
+                  super.getResourceAsStream(name.replace("course-new/", "course-valid/"))) {
+                if (input == null) return null;
+                byte[] bytes = input.readAllBytes();
+                if (name.endsWith("course.properties"))
+                  bytes =
+                      new String(bytes, StandardCharsets.UTF_8)
+                          .replace("contentVersion=1", "contentVersion=2")
+                          .getBytes(StandardCharsets.UTF_8);
+                return new ByteArrayInputStream(bytes);
+              } catch (IOException failed) {
+                throw new UncheckedIOException(failed);
+              }
+            }
+            return super.getResourceAsStream(name);
+          }
+        };
+    var catalog = new ClasspathCourseCatalog("course-new", loader);
+    assertEquals(2, catalog.load().contentVersion());
+    assertEquals(
+        List.of(2, 1), catalog.supportedCourses().stream().map(Course::contentVersion).toList());
+    assertEquals(1, catalog.load(1).contentVersion());
+    assertTrue(catalog.load(catalog.load(1).lessons().getFirst().assets().getFirst()).length > 0);
+    assertThrows(IllegalArgumentException.class, () -> catalog.load(3));
+    assertEquals(1, new ClasspathCourseCatalog("course").supportedCourses().size());
+  }
+
+  @Test
+  void compatibilityManifestCannotClaimUnknownOrConflictingHistoricalVersions() {
+    for (String metadata :
+        List.of(
+            "versions=2\nversion.2.root=course-valid\n",
+            "versions=1\nversion.1.root=missing-history\n",
+            "versions=1\nversion.1.root=course\n",
+            "versions=1,1\nversion.1.root=course-valid\n")) {
+      var catalog =
+          new ClasspathCourseCatalog(
+              "course-valid",
+              resourceLoader(
+                  "course-valid/compatibility.properties",
+                  metadata.getBytes(StandardCharsets.UTF_8)));
+      assertThrows(IllegalArgumentException.class, catalog::supportedCourses);
+    }
+  }
+
+  @Test
   void explicitOrderIgnoresDirectoryNamesAndAssetsHashRawUtf8Bytes() {
     Course course = new ClasspathCourseCatalog("course-valid").load();
     assertEquals(List.of(new LessonId("first"), new LessonId("second")), course.lessonOrder());
@@ -78,7 +133,7 @@ class ClasspathCourseCatalogTest {
     "missing-resource, absent/lesson.properties",
     "missing-key, title",
     "invalid-version, contentVersion",
-    "unsupported-version, contentVersion",
+    "unsupported-version, absent/lesson.properties",
     "unknown-key, typo",
     "invalid-id, CourseId"
   })

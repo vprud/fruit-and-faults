@@ -67,19 +67,26 @@ public record TransitionJournal(
               course, intendedProgress.activeLessonOpenedAtRevision().orElse(null));
     } else {
       CourseProgress previous = expectedProgress.orElseThrow();
-      if (!previous.course().equals(course) || fromLessonId.isEmpty()) {
-        throw new IllegalArgumentException(
-            "Expected prior progress for the same incomplete course.");
+      CourseProgress rebound =
+          previous.continueWith(
+              course, intendedProgress.activeLessonOpenedAtRevision().orElse(null));
+      if (fromLessonId.isEmpty()) {
+        if (previous.lessons().size() >= course.lessons().size()) {
+          throw new IllegalArgumentException(
+              "Expected appended content after a completed historical route.");
+        }
+        validIntended = rebound;
+      } else {
+        var previousLesson =
+            course.lessons().get(course.lessonOrder().indexOf(fromLessonId.orElseThrow()));
+        validIntended =
+            rebound
+                .advance(
+                    previousLesson.id(),
+                    previousLesson.question().correctOptionId(),
+                    intendedProgress.activeLessonOpenedAtRevision().orElse(null))
+                .progress();
       }
-      var previousLesson =
-          course.lessons().get(course.lessonOrder().indexOf(fromLessonId.orElseThrow()));
-      validIntended =
-          previous
-              .advance(
-                  previousLesson.id(),
-                  previousLesson.question().correctOptionId(),
-                  intendedProgress.activeLessonOpenedAtRevision().orElse(null))
-              .progress();
     }
     if (!validIntended.equals(intendedProgress)) {
       throw new IllegalArgumentException(
