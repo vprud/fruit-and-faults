@@ -173,12 +173,18 @@ class ProcessGitRepositoryTest {
   @Test
   void repositoryProbePassesEachReadOnlyArgumentSeparately() throws IOException {
     new ProcessGitRepository().initialize(root);
+    AtomicBoolean inspectedConfiguration = new AtomicBoolean();
     ProcessGitRepository git =
         new ProcessGitRepository(
             Duration.ofSeconds(1),
             4096,
             command -> new FakeProcess("", 0),
             request -> {
+              if (request.arguments().contains("--get-regexp")) {
+                inspectedConfiguration.set(true);
+                return new org.fruitandfaults.validation.application.ProcessResult.Exited(
+                    1, org.fruitandfaults.validation.application.ProcessResult.Output.empty());
+              }
               assertEquals(
                   List.of(
                       "git",
@@ -195,6 +201,7 @@ class ProcessGitRepositoryTest {
                       root.resolve(".git") + "\n" + root + "\ntrue\n", "", false, false));
             });
     git.requireInitialized(root);
+    assertTrue(inspectedConfiguration.get());
   }
 
   @Test
@@ -203,12 +210,10 @@ class ProcessGitRepositoryTest {
     Path pidFile = root.resolve("child.pid");
     ProcessGitRepository git = repositoryUsingFixture(pidFile, Duration.ofMillis(250));
 
-    IOException failed = assertThrows(IOException.class, () -> git.requireInitialized(root));
+    GitInitializationException failed =
+        assertThrows(GitInitializationException.class, () -> git.requireInitialized(root));
 
-    assertEquals(
-        GitInitializationException.Reason.TIMEOUT,
-        ((GitInitializationException) java.util.Objects.requireNonNull(failed.getCause()))
-            .reason());
+    assertEquals(GitInitializationException.Reason.TIMEOUT, failed.reason());
     assertFalse(
         ProcessHandle.of(Long.parseLong(Files.readString(pidFile)))
             .map(ProcessHandle::isAlive)
@@ -240,13 +245,10 @@ class ProcessGitRepositoryTest {
     caller.join(TimeUnit.SECONDS.toMillis(5));
 
     assertFalse(caller.isAlive());
-    assertTrue(failure.get() instanceof IOException);
+    assertTrue(failure.get() instanceof GitInitializationException);
     assertEquals(
         GitInitializationException.Reason.INTERRUPTED,
-        ((GitInitializationException)
-                java.util.Objects.requireNonNull(
-                    java.util.Objects.requireNonNull(failure.get()).getCause()))
-            .reason());
+        ((GitInitializationException) java.util.Objects.requireNonNull(failure.get())).reason());
     assertTrue(interrupted.get());
     assertFalse(child.isAlive());
   }
@@ -309,6 +311,47 @@ class ProcessGitRepositoryTest {
     assertThrows(IOException.class, () -> git.requireInitialized(root));
     assertEquals(content, Files.readString(target));
     assertEquals("[core]\n\tbare = false\n", Files.readString(outside));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"CONFIG", ".GITATTRIBUTES", ".GIT"})
+  void rejectsCaseVariantGitMetadataOnCaseInsensitiveFilesystems(String variant)
+      throws IOException {
+    new ProcessGitRepository().initialize(root);
+    Path original;
+    Path changed;
+    switch (variant) {
+      case "CONFIG" -> {
+        original = root.resolve(".git/config");
+        changed = root.resolve(".git/CONFIG");
+      }
+      case ".GITATTRIBUTES" -> {
+        original = root.resolve(".gitattributes");
+        Files.writeString(original, "*.txt text\n");
+        changed = root.resolve(".GITATTRIBUTES");
+      }
+      case ".GIT" -> {
+        original = root.resolve(".git");
+        changed = root.resolve(".GIT");
+      }
+      default -> throw new IllegalArgumentException("Unknown case variant");
+    }
+    Path staging = original.resolveSibling(original.getFileName() + ".case-staging");
+    Files.move(original, staging);
+    Files.move(staging, changed);
+    assumeTrue(Files.exists(original), "This filesystem treats case variants as distinct names.");
+    ProcessGitRepository guarded =
+        new ProcessGitRepository(
+            Duration.ofSeconds(1),
+            4096,
+            command -> {
+              throw new AssertionError("Case-variant metadata reached Git");
+            },
+            request -> {
+              throw new AssertionError("Case-variant metadata reached read-only Git");
+            });
+
+    assertThrows(IOException.class, () -> guarded.requireInitialized(root));
   }
 
   private static final class FakeProcess extends Process {

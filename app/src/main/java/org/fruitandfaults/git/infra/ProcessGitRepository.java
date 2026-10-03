@@ -14,7 +14,6 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -100,6 +99,7 @@ public final class ProcessGitRepository implements GitRepository {
     requireLocalConfiguration(gitDirectory.resolve("config"));
     requireLocalConfiguration(gitDirectory.resolve("config.worktree"));
     requireNoExecutableFilters(normalized);
+    requireNoExecutableLocalConfiguration(normalized);
     CommandOutput repository;
     try {
       repository =
@@ -479,16 +479,28 @@ public final class ProcessGitRepository implements GitRepository {
       throw new IOException(
           "Workspace Git configuration contains a UTF-8 BOM; preserve it and restore BOM-free local configuration.");
     }
-    List<String> normalizedLines =
-        text.lines().map(line -> line.stripLeading().toLowerCase(Locale.ROOT)).toList();
-    if (normalizedLines.stream().anyMatch(line -> line.startsWith("[include"))) {
-      throw new IOException(
-          "Workspace Git configuration includes external files; preserve it and restore self-contained configuration.");
+    // Git's own parser performs semantic key inspection below; this pass rejects ambiguous bytes.
+    if (text.indexOf('\0') >= 0) {
+      throw new IOException("Workspace Git configuration contains unsupported NUL bytes.");
     }
-    if (normalizedLines.stream().anyMatch(line -> line.startsWith("[filter"))
-        || normalizedLines.stream().anyMatch(line -> line.startsWith("attributesfile"))) {
+  }
+
+  private void requireNoExecutableLocalConfiguration(Path root) throws IOException {
+    CommandOutput unsafe =
+        probe(
+            root,
+            "config",
+            "--local",
+            "--no-includes",
+            "--null",
+            "--get-regexp",
+            "^(filter\\.|include\\.|core\\.attributesfile$)");
+    if (unsafe.exitCode() == 0) {
       throw new IOException(
-          "Workspace Git configuration can activate executable content filters; remove those settings before retrying.");
+          "Workspace Git configuration can load external files or executable content filters; remove those settings before retrying.");
+    }
+    if (unsafe.exitCode() != 1 || !unsafe.text().isEmpty()) {
+      throw invalidOutput();
     }
   }
 
@@ -504,6 +516,14 @@ public final class ProcessGitRepository implements GitRepository {
           public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes)
               throws IOException {
             requireSafeEntry(attributes);
+            Path relative = root.relativize(directory);
+            if (relative.getNameCount() > 0
+                && directory.getFileName().toString().equalsIgnoreCase(".git")) {
+              if (relative.getNameCount() > 1
+                  || !directory.getFileName().toString().equals(".git")) {
+                throw unsafeInspection();
+              }
+            }
             return FileVisitResult.CONTINUE;
           }
 
@@ -512,6 +532,18 @@ public final class ProcessGitRepository implements GitRepository {
               throws IOException {
             requireSafeEntry(attributes);
             if (!attributes.isRegularFile()) {
+              throw unsafeInspection();
+            }
+            String name = file.getFileName().toString();
+            if (name.equalsIgnoreCase(".git")) {
+              throw unsafeInspection();
+            }
+            if (name.equalsIgnoreCase(".gitattributes") && !name.equals(".gitattributes")) {
+              throw unsafeInspection();
+            }
+            if ((name.equalsIgnoreCase("config") || name.equalsIgnoreCase("config.worktree"))
+                && containsGitSegment(root.relativize(file))
+                && !(name.equals("config") || name.equals("config.worktree"))) {
               throw unsafeInspection();
             }
             if (isLocalGitConfiguration(root, file)) {
