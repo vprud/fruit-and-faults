@@ -90,6 +90,48 @@ class ProcessGitStatusTest {
     assertEquals(1, git.status(root).trackedChanges());
   }
 
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void configuredContentFiltersAreRejectedBeforeGitCanExecuteThem(boolean inSubmodule)
+      throws IOException {
+    Path repository = root;
+    Files.writeString(root.resolve("file.txt"), "first\n");
+    if (inSubmodule) {
+      repository = Files.createDirectory(root.resolve("nested-repository"));
+      git.initialize(repository);
+      Files.writeString(repository.resolve("file.txt"), "inside\n");
+      LearnerJourneyFixture.runGit(repository, "add", "file.txt");
+      LearnerJourneyFixture.runGit(
+          repository,
+          "-c",
+          "user.name=Learner",
+          "-c",
+          "user.email=learner@example.invalid",
+          "commit",
+          "-qm",
+          "test: nested fixture");
+      LearnerJourneyFixture.runGit(root, "add", "nested-repository");
+    }
+    commit();
+    Path marker = temporary.resolve("FILTER-WAS-EXECUTED");
+    boolean windows = System.getProperty("os.name").startsWith("Windows");
+    Path script = temporary.resolve(windows ? "record-filter.cmd" : "record-filter.sh");
+    Files.writeString(
+        script,
+        windows
+            ? "@echo off\r\n>\"" + marker + "\" echo executed\r\nmore\r\n"
+            : "#!/bin/sh\nprintf executed > '" + marker + "'\ncat\n");
+    if (!windows) {
+      script.toFile().setExecutable(true);
+    }
+    LearnerJourneyFixture.runGit(repository, "config", "filter.evil.clean", script.toString());
+    Files.writeString(repository.resolve(".gitattributes"), "*.txt filter=evil\n");
+    Files.writeString(repository.resolve("file.txt"), "changed\n");
+
+    assertThrows(IOException.class, () -> git.status(root));
+    assertFalse(Files.exists(marker));
+  }
+
   @Test
   void preexistingInterruptionPreventsAnyGitLaunchAndRetainsTypedCancellation() {
     ProcessGitRepository guarded =

@@ -99,24 +99,26 @@ public final class ProcessGitRepository implements GitRepository {
     }
     requireLocalConfiguration(gitDirectory.resolve("config"));
     requireLocalConfiguration(gitDirectory.resolve("config.worktree"));
-    String observed;
+    requireNoExecutableFilters(normalized);
+    CommandOutput repository;
     try {
-      observed =
-          execute(
-              List.of(
-                  "git",
-                  "-C",
-                  normalized.toString(),
-                  "rev-parse",
-                  "--absolute-git-dir",
-                  "--show-toplevel",
-                  "--is-inside-work-tree"));
+      repository =
+          probe(
+              normalized,
+              "rev-parse",
+              "--absolute-git-dir",
+              "--show-toplevel",
+              "--is-inside-work-tree");
     } catch (GitInitializationException failed) {
       throw new IOException(
           "Existing Git repository could not be validated; preserve it and inspect its local state.",
           failed);
     }
-    requireMatchingRepository(observed, canonicalRoot, canonicalGitDirectory);
+    if (repository.exitCode() != 0 || repository.truncated()) {
+      throw new IOException(
+          "Existing Git repository could not be validated; preserve it and inspect its local state.");
+    }
+    requireMatchingRepository(repository.text(), canonicalRoot, canonicalGitDirectory);
     requireSafeDirectory(gitDirectory);
     requireSafeRepositoryTree(gitDirectory);
   }
@@ -384,6 +386,7 @@ public final class ProcessGitRepository implements GitRepository {
             System.getProperty("os.name").startsWith("Windows") ? "NUL" : "/dev/null");
     builder.environment().put("GIT_NO_LAZY_FETCH", "1");
     builder.environment().put("GIT_ALLOW_PROTOCOL", "");
+    builder.environment().put("GIT_ATTR_NOSYSTEM", "1");
   }
 
   private static void requireSafeDirectory(Path root) throws IOException {
@@ -476,12 +479,105 @@ public final class ProcessGitRepository implements GitRepository {
       throw new IOException(
           "Workspace Git configuration contains a UTF-8 BOM; preserve it and restore BOM-free local configuration.");
     }
-    if (text.lines()
-        .map(line -> line.stripLeading().toLowerCase(Locale.ROOT))
-        .anyMatch(line -> line.startsWith("[include"))) {
+    List<String> normalizedLines =
+        text.lines().map(line -> line.stripLeading().toLowerCase(Locale.ROOT)).toList();
+    if (normalizedLines.stream().anyMatch(line -> line.startsWith("[include"))) {
       throw new IOException(
           "Workspace Git configuration includes external files; preserve it and restore self-contained configuration.");
     }
+    if (normalizedLines.stream().anyMatch(line -> line.startsWith("[filter"))
+        || normalizedLines.stream().anyMatch(line -> line.startsWith("attributesfile"))) {
+      throw new IOException(
+          "Workspace Git configuration can activate executable content filters; remove those settings before retrying.");
+    }
+  }
+
+  private static void requireNoExecutableFilters(Path root) throws IOException {
+    Files.walkFileTree(
+        root,
+        Set.of(),
+        32,
+        new SimpleFileVisitor<>() {
+          private int entries;
+
+          @Override
+          public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes)
+              throws IOException {
+            requireSafeEntry(attributes);
+            return FileVisitResult.CONTINUE;
+          }
+
+          @Override
+          public FileVisitResult visitFile(Path file, BasicFileAttributes attributes)
+              throws IOException {
+            requireSafeEntry(attributes);
+            if (!attributes.isRegularFile()) {
+              throw unsafeInspection();
+            }
+            if (isLocalGitConfiguration(root, file)) {
+              requireLocalConfiguration(file);
+            } else if (isAttributesFile(root, file)) {
+              requireNoFilterAttribute(file);
+            }
+            return FileVisitResult.CONTINUE;
+          }
+
+          private void requireSafeEntry(BasicFileAttributes attributes) throws IOException {
+            if (++entries > 10_000 || attributes.isSymbolicLink()) {
+              throw unsafeInspection();
+            }
+          }
+        });
+  }
+
+  private static boolean isLocalGitConfiguration(Path root, Path file) {
+    String name = file.getFileName().toString();
+    return (name.equals("config") || name.equals("config.worktree"))
+        && containsGitSegment(root.relativize(file));
+  }
+
+  private static boolean isAttributesFile(Path root, Path file) {
+    if (file.getFileName().toString().equals(".gitattributes")) {
+      return true;
+    }
+    Path relative = root.relativize(file);
+    return file.getFileName().toString().equals("attributes")
+        && relative.getNameCount() >= 3
+        && relative.getName(relative.getNameCount() - 2).toString().equals("info")
+        && containsGitSegment(relative);
+  }
+
+  private static boolean containsGitSegment(Path relative) {
+    for (Path segment : relative) {
+      if (segment.toString().equals(".git")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static void requireNoFilterAttribute(Path attributes) throws IOException {
+    byte[] bytes;
+    try (InputStream input = Files.newInputStream(attributes, LinkOption.NOFOLLOW_LINKS)) {
+      bytes = input.readNBytes(65_537);
+    }
+    if (bytes.length > 65_536) {
+      throw unsafeInspection();
+    }
+    String text =
+        StandardCharsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+    if (text.lines()
+        .map(String::stripLeading)
+        .filter(line -> !line.isEmpty() && !line.startsWith("#"))
+        .anyMatch(line -> line.matches(".*(?:^|\\s)(?:-|!|\\?)?filter(?:=\\S+)?(?:\\s|$).*$"))) {
+      throw new IOException(
+          "Workspace attributes activate executable content filters; remove those attributes before retrying.");
+    }
+  }
+
+  private static IOException unsafeInspection() {
+    return new IOException(
+        "Workspace Git safety inspection encountered an unsafe entry or exceeded its bounded limits.");
   }
 
   private static void terminate(Process process) {
