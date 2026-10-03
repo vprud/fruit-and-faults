@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -311,6 +312,48 @@ class JacksonManagedFilesRepositoryTest {
     assertThrows(IOException.class, () -> concurrent.save(root, ManagedFiles.empty()));
     assertEquals("{\"formatVersion\":2}", Files.readString(stateFile()));
     assertEquals(VALID, Files.readString(root.resolve("relocated-manifest")));
+  }
+
+  @Test
+  void initialManifestAppearingInsideCreationCallbackIsPreserved() throws IOException {
+    byte[] late = "{\"formatVersion\":2}".getBytes(StandardCharsets.UTF_8);
+    JacksonManagedFilesRepository concurrent =
+        new JacksonManagedFilesRepository(
+            SafeWorkspaceFiles::writeFlushed,
+            (directory, temporary, target) -> {
+              throw new AssertionError("Initialization cannot use replacing move");
+            },
+            BasicFileAttributes::fileKey,
+            (directory, target) -> {
+              Files.write(stateFile(), late);
+              return SafeWorkspaceFiles.createNewChannel(directory, target);
+            });
+    assertAll(
+        () ->
+            assertThrows(
+                WorkspaceWriteException.class, () -> concurrent.save(root, ManagedFiles.empty())),
+        () -> assertArrayEquals(late, Files.readAllBytes(stateFile())),
+        () -> assertEquals(List.of(stateFile()), children(stateDirectory())));
+  }
+
+  @Test
+  void failedInitialManifestWriteRemovesOnlyOwnedTarget() throws IOException {
+    AtomicInteger writes = new AtomicInteger();
+    JacksonManagedFilesRepository partial =
+        new JacksonManagedFilesRepository(
+            (channel, bytes) -> {
+              if (writes.getAndIncrement() == 1) {
+                channel.write(ByteBuffer.wrap("partial".getBytes(StandardCharsets.UTF_8)));
+                throw new IOException("injected initial target write failure");
+              }
+              SafeWorkspaceFiles.writeFlushed(channel, bytes);
+            },
+            (directory, temporary, target) -> {
+              throw new AssertionError("Initialization cannot use replacing move");
+            });
+    assertThrows(WorkspaceWriteException.class, () -> partial.save(root, ManagedFiles.empty()));
+    assertTrue(Files.notExists(stateFile()));
+    assertEquals(List.of(), children(stateDirectory()));
   }
 
   @Test

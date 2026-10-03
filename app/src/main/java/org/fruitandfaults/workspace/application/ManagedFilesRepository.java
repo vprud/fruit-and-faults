@@ -19,7 +19,9 @@ public interface ManagedFilesRepository {
   Optional<ManagedFiles> load(Path workspaceRoot) throws IOException;
 
   /**
-   * Replaces valid tool-owned state after a complete flushed temporary write.
+   * Creates absent state exclusively or replaces valid state after a flushed temporary write.
+   * Initial creation writes directly to the reserved entry; a crash may leave a partial document
+   * requiring recovery rather than permission to overwrite it.
    *
    * @param workspaceRoot selected existing learner workspace
    * @param managed validated ownership snapshot
