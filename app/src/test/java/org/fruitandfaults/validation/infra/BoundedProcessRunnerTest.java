@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -20,6 +22,7 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import org.fruitandfaults.validation.application.ProcessRequest;
 import org.fruitandfaults.validation.application.ProcessResult;
@@ -207,6 +210,75 @@ class BoundedProcessRunnerTest {
   }
 
   @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void enumerationProviderFailureStillTerminatesParentAndDrains(boolean cancellation) {
+    AtomicReference<Process> parent = new AtomicReference<>();
+    BoundedProcessRunner runner =
+        new BoundedProcessRunner(
+            builder -> {
+              Process process = builder.start();
+              parent.set(process);
+              return new EnumerationFailureProcess(process, cancellation);
+            },
+            (process, nanos) -> process.waitFor(nanos, TimeUnit.NANOSECONDS));
+    try {
+      ProcessResult result = runner.run(request("hold"));
+      if (cancellation) {
+        ProcessResult.Interrupted interrupted =
+            assertInstanceOf(ProcessResult.Interrupted.class, result);
+        assertEquals(ProcessResult.Cleanup.INCOMPLETE, interrupted.cleanup());
+        assertTrue(Thread.currentThread().isInterrupted());
+      } else {
+        ProcessResult.Failed failed = assertInstanceOf(ProcessResult.Failed.class, result);
+        assertEquals(ProcessResult.FailureReason.CLEANUP_FAILURE, failed.reason());
+        assertFalse(failed.diagnostic().contains("SECRET_TOKEN"));
+      }
+      assertFalse(Objects.requireNonNull(parent.get()).isAlive());
+      assertFalse(
+          Thread.getAllStackTraces().keySet().stream()
+              .anyMatch(thread -> thread.isAlive() && thread.getName().startsWith("faf-process-")));
+    } finally {
+      Thread.interrupted();
+      Process process = parent.get();
+      if (process != null) {
+        process.destroyForcibly();
+      }
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"echo", "failure", "flood"})
+  void emitsLfForSuccessErrorExitAndTruncatedTailsWithWindowsJvmSeparator(String mode) {
+    List<String> arguments = new ArrayList<>(command(mode, "literal"));
+    arguments.add(1, "-Dline.separator=\r\n");
+    ProcessRequest request =
+        new ProcessRequest(
+            arguments, root, Duration.ofSeconds(10), mode.equals("flood") ? 257 : 4096);
+    ProcessResult.Exited result =
+        assertInstanceOf(ProcessResult.Exited.class, new BoundedProcessRunner().run(request));
+    assertEquals(mode.equals("failure") ? 23 : 0, result.exitCode());
+    switch (mode) {
+      case "echo" -> {
+        assertEquals(root + "\nliteral\n", result.output().stdout());
+        assertEquals("stderr message\n", result.output().stderr());
+      }
+      case "failure" -> {
+        assertEquals("useful stdout\n", result.output().stdout());
+        assertEquals("useful stderr\n", result.output().stderr());
+      }
+      case "flood" -> {
+        assertTrue(result.output().stdout().endsWith("stdout useful tail\n"));
+        assertTrue(result.output().stderr().endsWith("stderr useful tail\n"));
+        assertTrue(result.output().stdoutTruncated());
+        assertTrue(result.output().stderrTruncated());
+      }
+      default -> throw new AssertionError("Unexpected fixture mode");
+    }
+    assertFalse(result.output().stdout().contains("\r"));
+    assertFalse(result.output().stderr().contains("\r"));
+  }
+
+  @ParameterizedTest
   @ValueSource(strings = {"missing", "file", "symlink", "symlink-ancestor"})
   void rejectsUnsafeWorkingDirectoryBeforeLaunching(String kind) throws IOException {
     Path outside = Files.createDirectory(temporary.toRealPath().resolve("outside"));
@@ -320,5 +392,69 @@ class BoundedProcessRunnerTest {
   private static int capturedBytes(ProcessResult.Output output) {
     return output.stdout().getBytes(StandardCharsets.UTF_8).length
         + output.stderr().getBytes(StandardCharsets.UTF_8).length;
+  }
+
+  private static final class EnumerationFailureProcess extends Process {
+    private final Process delegate;
+    private final boolean cancellation;
+
+    EnumerationFailureProcess(Process delegate, boolean cancellation) {
+      this.delegate = delegate;
+      this.cancellation = cancellation;
+    }
+
+    @Override
+    public Stream<ProcessHandle> descendants() {
+      if (cancellation) {
+        Thread.currentThread().interrupt();
+      }
+      throw new IllegalStateException("sysctl failed SECRET_TOKEN=fake");
+    }
+
+    @Override
+    public InputStream getInputStream() {
+      return delegate.getInputStream();
+    }
+
+    @Override
+    public InputStream getErrorStream() {
+      return delegate.getErrorStream();
+    }
+
+    @Override
+    public OutputStream getOutputStream() {
+      return delegate.getOutputStream();
+    }
+
+    @Override
+    public int waitFor() throws InterruptedException {
+      return delegate.waitFor();
+    }
+
+    @Override
+    public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException {
+      return delegate.waitFor(timeout, unit);
+    }
+
+    @Override
+    public int exitValue() {
+      return delegate.exitValue();
+    }
+
+    @Override
+    public boolean isAlive() {
+      return delegate.isAlive();
+    }
+
+    @Override
+    public void destroy() {
+      delegate.destroy();
+    }
+
+    @Override
+    public Process destroyForcibly() {
+      delegate.destroyForcibly();
+      return this;
+    }
   }
 }

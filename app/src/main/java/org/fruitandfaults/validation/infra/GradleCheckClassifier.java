@@ -25,7 +25,7 @@ public final class GradleCheckClassifier {
   private static final Pattern TEST_TASK = Pattern.compile("^> Task :(?:[\\w.-]+:)*test FAILED$");
   private static final Pattern JUNIT_FAILURE = Pattern.compile("^[\\p{L}\\p{N}_.$]+ > .+ FAILED$");
   private static final Pattern JAVA_ERROR =
-      Pattern.compile("([\\p{L}\\p{N}_$.-]+\\.java):([0-9]+): error: ([^\\r\\n]+)");
+      Pattern.compile("([\\p{L}\\p{N}_$.-]+\\.java):([0-9]+): error:(?: |$)");
 
   /**
    * Converts process facts into conservative, actionable validation outcomes.
@@ -174,12 +174,9 @@ public final class GradleCheckClassifier {
       return Optional.empty();
     }
     String location =
-        Objects.requireNonNull(matcher.group(1))
-            + ":"
-            + Objects.requireNonNull(matcher.group(2))
-            + ": error: "
-            + Objects.requireNonNull(matcher.group(3));
-    return Optional.of(location.length() <= 400 ? location : location.substring(0, 397) + "...");
+        Objects.requireNonNull(matcher.group(1)) + ":" + Objects.requireNonNull(matcher.group(2));
+    String retained = location.length() <= 300 ? location : location.substring(0, 297) + "...";
+    return Optional.of("Java compilation failed at " + retained + ".");
   }
 
   private static String clean(String output) {
@@ -188,7 +185,11 @@ public final class GradleCheckClassifier {
     StringBuilder safe = new StringBuilder(withoutAnsi.length());
     withoutAnsi
         .codePoints()
-        .filter(character -> !Character.isISOControl(character) || character == '\n')
+        .filter(
+            character ->
+                character == '\n'
+                    || (Character.getType(character) != Character.CONTROL
+                        && Character.getType(character) != Character.FORMAT))
         .forEach(safe::appendCodePoint);
     return safe.toString();
   }

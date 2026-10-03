@@ -91,6 +91,10 @@ public final class BoundedProcessRunner implements ProcessRunner {
       process.getOutputStream().close();
       while (true) {
         session.observeDescendants();
+        if (session.enumerationFailed) {
+          state = State.CLEANUP_FAILED;
+          break;
+        }
         long remaining = deadline - nanoTime.getAsLong();
         if (remaining <= 0) {
           state = State.TIMED_OUT;
@@ -112,7 +116,14 @@ public final class BoundedProcessRunner implements ProcessRunner {
     } catch (IOException failed) {
       state = State.OUTPUT_FAILED;
     } finally {
-      session.finish(Math.max(0, deadline - nanoTime.getAsLong()), state == State.EXITED);
+      try {
+        session.finish(Math.max(0, deadline - nanoTime.getAsLong()), state == State.EXITED);
+      } finally {
+        session.interrupted |= Thread.currentThread().isInterrupted();
+        if (session.interrupted) {
+          Thread.currentThread().interrupt();
+        }
+      }
     }
     ProcessResult.Output output = session.output();
     if (session.interrupted) {
@@ -123,6 +134,7 @@ public final class BoundedProcessRunner implements ProcessRunner {
       case TIMED_OUT -> new ProcessResult.TimedOut(output, session.cleanup());
       case INTERRUPTED -> new ProcessResult.Interrupted(output, session.cleanup());
       case OUTPUT_FAILED -> failed(ProcessResult.FailureReason.OUTPUT_FAILURE, output);
+      case CLEANUP_FAILED -> failed(ProcessResult.FailureReason.CLEANUP_FAILURE, output);
       case EXITED -> {
         if (session.cleanup() != ProcessResult.Cleanup.COMPLETE) {
           yield failed(ProcessResult.FailureReason.CLEANUP_FAILURE, output);
@@ -169,7 +181,8 @@ public final class BoundedProcessRunner implements ProcessRunner {
     EXITED,
     TIMED_OUT,
     INTERRUPTED,
-    OUTPUT_FAILED
+    OUTPUT_FAILED,
+    CLEANUP_FAILED
   }
 
   private static final class Session {
@@ -184,6 +197,7 @@ public final class BoundedProcessRunner implements ProcessRunner {
     private boolean incomplete;
     private boolean outputFailed;
     private boolean outputTimedOut;
+    private boolean enumerationFailed;
 
     Session(Process process, int limit) {
       this.process = process;
@@ -219,19 +233,28 @@ public final class BoundedProcessRunner implements ProcessRunner {
     }
 
     void observeDescendants() {
+      List<ProcessHandle> foundHandles;
+      // Only the provider's stream creation, iteration and closure belong inside this catch.
       try (var found = process.descendants()) {
-        for (ProcessHandle handle : found.limit(MAX_DESCENDANTS + 1L).toList()) {
-          if (!descendants.containsKey(handle.pid())) {
-            if (descendants.size() == MAX_DESCENDANTS) {
-              incomplete = true;
-              handle.destroyForcibly();
-              continue;
-            }
-            descendants.put(handle.pid(), handle);
-          }
-        }
+        foundHandles = found.limit(MAX_DESCENDANTS + 1L).toList();
       } catch (UnsupportedOperationException | SecurityException unavailable) {
         unsupported = true;
+        enumerationFailed = true;
+        return;
+      } catch (RuntimeException providerFailure) {
+        incomplete = true;
+        enumerationFailed = true;
+        return;
+      }
+      for (ProcessHandle handle : foundHandles) {
+        if (!descendants.containsKey(handle.pid())) {
+          if (descendants.size() == MAX_DESCENDANTS) {
+            incomplete = true;
+            handle.destroyForcibly();
+            continue;
+          }
+          descendants.put(handle.pid(), handle);
+        }
       }
     }
 
@@ -240,41 +263,82 @@ public final class BoundedProcessRunner implements ProcessRunner {
       long now = System.nanoTime();
       long executionDeadline = now + remainingExecutionNanos;
       long cleanupDeadline = now + CLEANUP_NANOS;
-      observeDescendants();
-      terminateDescendants(cleanupDeadline);
-      // Reinspect before stopping the parent to own children created during termination.
-      observeDescendants();
-      terminateDescendants(cleanupDeadline);
-      if (process.isAlive()) {
-        process.destroyForcibly();
-      }
-      awaitParent(cleanupDeadline);
       long outputDeadline =
           normalExit ? Math.min(executionDeadline, cleanupDeadline) : cleanupDeadline;
-      for (Future<?> reader : readers) {
+      try {
+        observeDescendants();
+        terminateDescendants(cleanupDeadline);
+        // Reinspect before stopping the parent to own children created during termination.
+        observeDescendants();
+        terminateDescendants(cleanupDeadline);
+      } finally {
         try {
-          reader.get(Math.max(1, outputDeadline - System.nanoTime()), TimeUnit.NANOSECONDS);
-        } catch (InterruptedException cancelled) {
-          interrupted = true;
-        } catch (ExecutionException failed) {
-          outputFailed = true;
-        } catch (TimeoutException timeout) {
-          outputTimedOut = true;
+          stopParent(cleanupDeadline);
+        } finally {
+          try {
+            finishDrains(outputDeadline, cleanupDeadline);
+          } finally {
+            verifyTermination();
+          }
         }
       }
-      readers.forEach(reader -> reader.cancel(true));
-      drains.shutdownNow();
+    }
+
+    private void finishDrains(long outputDeadline, long cleanupDeadline) {
       try {
-        if (!drains.awaitTermination(
-            Math.max(1, cleanupDeadline - System.nanoTime()), TimeUnit.NANOSECONDS)) {
-          incomplete = true;
+        for (Future<?> reader : readers) {
+          awaitReader(reader, outputDeadline);
         }
-      } catch (InterruptedException cancelled) {
-        interrupted = true;
+      } finally {
+        readers.forEach(reader -> reader.cancel(true));
+        drains.shutdownNow();
+        while (!drains.isTerminated()) {
+          try {
+            if (!drains.awaitTermination(
+                Math.max(1, cleanupDeadline - System.nanoTime()), TimeUnit.NANOSECONDS)) {
+              incomplete = true;
+            }
+            break;
+          } catch (InterruptedException cancelled) {
+            interrupted = true;
+            if (System.nanoTime() >= cleanupDeadline) {
+              break;
+            }
+          }
+        }
         incomplete |= !drains.isTerminated();
       }
-      incomplete |=
-          process.isAlive() || descendants.values().stream().anyMatch(ProcessHandle::isAlive);
+    }
+
+    private void awaitReader(Future<?> reader, long deadline) {
+      while (true) {
+        try {
+          reader.get(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+          return;
+        } catch (InterruptedException cancelled) {
+          interrupted = true;
+          if (System.nanoTime() >= deadline) {
+            outputTimedOut = true;
+            return;
+          }
+        } catch (ExecutionException failed) {
+          outputFailed = true;
+          return;
+        } catch (TimeoutException timeout) {
+          outputTimedOut = true;
+          return;
+        }
+      }
+    }
+
+    private void verifyTermination() {
+      try {
+        incomplete |=
+            process.isAlive() || descendants.values().stream().anyMatch(ProcessHandle::isAlive);
+      } catch (RuntimeException providerFailure) {
+        // Only process-provider liveness queries occur in this try block.
+        incomplete = true;
+      }
     }
 
     private void terminateDescendants(long deadline) {
@@ -295,18 +359,40 @@ public final class BoundedProcessRunner implements ProcessRunner {
         incomplete = true;
       } catch (UnsupportedOperationException | SecurityException unavailable) {
         unsupported = true;
+      } catch (RuntimeException providerFailure) {
+        // This phase only queries and terminates ProcessHandle providers.
+        incomplete = true;
       }
     }
 
-    private void awaitParent(long deadline) {
+    private void stopParent(long deadline) {
       try {
-        if (!process.waitFor(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS)) {
-          incomplete = true;
+        if (process.isAlive()) {
+          process.destroyForcibly();
         }
-      } catch (InterruptedException cancelled) {
-        interrupted = true;
-        process.destroyForcibly();
-        incomplete |= process.isAlive();
+      } catch (RuntimeException providerFailure) {
+        incomplete = true;
+      }
+      awaitParent(deadline);
+    }
+
+    private void awaitParent(long deadline) {
+      while (true) {
+        try {
+          if (!process.waitFor(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS)) {
+            incomplete = true;
+          }
+          return;
+        } catch (InterruptedException cancelled) {
+          interrupted = true;
+          if (System.nanoTime() >= deadline) {
+            incomplete = true;
+            return;
+          }
+        } catch (RuntimeException providerFailure) {
+          incomplete = true;
+          return;
+        }
       }
     }
 
