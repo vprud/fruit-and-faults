@@ -43,4 +43,14 @@ public record WorkspacePath(String value) {
   public String aliasKey() {
     return Normalizer.normalize(value, Normalizer.Form.NFD).toLowerCase(Locale.ROOT);
   }
+
+  /**
+   * Identifies the reserved tool metadata tree, including portable spelling aliases.
+   *
+   * @return whether a learner asset would overlap tool-owned state
+   */
+  public boolean isToolMetadata() {
+    String key = aliasKey();
+    return key.equals(".fruit-and-faults") || key.startsWith(".fruit-and-faults/");
+  }
 }
