@@ -3,10 +3,12 @@ package org.fruitandfaults.course.infra;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -25,6 +27,8 @@ import org.fruitandfaults.course.domain.Lesson;
 import org.fruitandfaults.course.domain.LessonAsset;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class LearnerBundleTest {
   private static final String MAIN = "src/main/java/org/fruitandfaults/game/";
@@ -137,6 +141,75 @@ class LearnerBundleTest {
     assertFalse(tracked.contains("transition.json"), tracked);
     assertFalse(tracked.contains(".gradle/cache"), tracked);
     assertFalse(tracked.contains("output.class"), tracked);
+  }
+
+  @Test
+  void distributionCacheSelectionUsesTheFullBundledUrlWithCompetingCompletedHashes()
+      throws Exception {
+    disclose(0);
+    Properties wrapper = new Properties();
+    try (InputStream input =
+        Files.newInputStream(workspace.resolve("gradle/wrapper/gradle-wrapper.properties"))) {
+      wrapper.load(input);
+    }
+    Path source = workspace.resolve("source-cache");
+    Path services = completedDistribution(source, "1w1c7tv4s851m17nbqdsro2tv");
+    Path mirror = completedDistribution(source, "c4u2luipyybyn2ofveo7ocla6");
+
+    Path fromServices =
+        LearnerJourneyFixture.cachedDistribution(
+            source, URI.create(wrapper.getProperty("distributionUrl")));
+    Path fromMirror =
+        LearnerJourneyFixture.cachedDistribution(
+            source, URI.create("https://mirror.example/distributions/gradle-9.7.1-bin.zip"));
+
+    assertEquals(services, fromServices);
+    assertEquals(mirror, fromMirror);
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {"missing-hash", "missing-marker", "missing-payload", "different-seeded-home"})
+  void unavailableExactDistributionFailsBeforeLaunchingEvenWhenAnotherHashIsComplete(String missing)
+      throws Exception {
+    disclose(0);
+    Files.writeString(workspace.resolve("gradlew"), "#!/bin/sh\ntouch wrapper-launched\n");
+    Files.writeString(
+        workspace.resolve("gradlew.bat"), "@echo off\r\necho launched> wrapper-launched\r\n");
+    Path source = workspace.resolve("source-cache");
+    completedDistribution(source, "c4u2luipyybyn2ofveo7ocla6");
+    Path exact = source.resolve("wrapper/dists/gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv");
+    if (missing.equals("missing-marker")) {
+      Files.createDirectories(exact.resolve("gradle-9.7.1"));
+    } else if (missing.equals("missing-payload")) {
+      Files.createDirectories(exact);
+      Files.writeString(exact.resolve("gradle-9.7.1-bin.zip.ok"), "");
+    } else if (missing.equals("different-seeded-home")) {
+      Path isolated = workspace.resolve(".gradle/fixture-user-home");
+      completedDistribution(isolated, "c4u2luipyybyn2ofveo7ocla6");
+      Files.writeString(isolated.resolve("init.gradle"), "");
+    }
+
+    IOException failure =
+        assertThrows(IOException.class, () -> LearnerJourneyFixture.build(workspace, source));
+
+    String message = Objects.requireNonNull(failure.getMessage());
+    assertTrue(
+        message.contains("exact cached Gradle distribution 1w1c7tv4s851m17nbqdsro2tv"), message);
+    assertFalse(Files.exists(workspace.resolve("wrapper-launched")));
+    if (missing.equals("different-seeded-home")) {
+      assertEquals(
+          "", Files.readString(workspace.resolve(".gradle/fixture-user-home/init.gradle")));
+    } else {
+      assertFalse(Files.exists(workspace.resolve(".gradle/fixture-user-home")));
+    }
+  }
+
+  private static Path completedDistribution(Path source, String hash) throws IOException {
+    Path directory = source.resolve("wrapper/dists/gradle-9.7.1-bin").resolve(hash);
+    Files.createDirectories(directory.resolve("gradle-9.7.1"));
+    Files.writeString(directory.resolve("gradle-9.7.1-bin.zip.ok"), "");
+    return directory;
   }
 
   @Test
