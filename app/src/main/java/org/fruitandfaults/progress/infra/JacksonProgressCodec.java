@@ -16,7 +16,9 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import org.fruitandfaults.course.application.CourseCatalog;
 import org.fruitandfaults.course.domain.Course;
+import org.fruitandfaults.course.domain.CourseCompatibility;
 import org.fruitandfaults.course.domain.LessonId;
 import org.fruitandfaults.progress.application.ProgressReadException;
 import org.fruitandfaults.progress.application.ProgressReadException.Reason;
@@ -39,6 +41,7 @@ public final class JacksonProgressCodec {
           "revealedHintLevels",
           "reflectionAnswers");
   private final Course course;
+  private final Map<Integer, Course> supported;
   private final ObjectMapper mapper =
       JsonMapper.builder()
           .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
@@ -51,7 +54,36 @@ public final class JacksonProgressCodec {
    * @param course validated installed content
    */
   public JacksonProgressCodec(Course course) {
+    this(course, List.of());
+  }
+
+  /**
+   * Resolves supported contracts from the installed trusted catalog.
+   *
+   * @param catalog installed and supported historical content
+   */
+  public JacksonProgressCodec(CourseCatalog catalog) {
+    this(catalog.load(), catalog.supportedCourses());
+  }
+
+  /**
+   * Supports exact prior definitions while preserving the version-one persisted schema.
+   *
+   * @param course installed content
+   * @param previous trusted supported historical definitions
+   */
+  public JacksonProgressCodec(Course course, List<Course> previous) {
     this.course = Objects.requireNonNull(course);
+    Map<Integer, Course> versions = new LinkedHashMap<>();
+    versions.put(course.contentVersion(), course);
+    for (Course historical : previous) {
+      CourseCompatibility.requirePrefix(course, historical);
+      Course duplicate = versions.putIfAbsent(historical.contentVersion(), historical);
+      if (duplicate != null && !duplicate.equals(historical)) {
+        throw new IllegalArgumentException("Ambiguous supported course content version.");
+      }
+    }
+    supported = Map.copyOf(versions);
   }
 
   /**
@@ -91,7 +123,8 @@ public final class JacksonProgressCodec {
     }
     String id = text(required(root, "courseId"));
     int contentVersion = integer(required(root, "courseContentVersion"));
-    if (!id.equals(course.id().value()) || contentVersion != course.contentVersion()) {
+    Course documentCourse = supported.get(contentVersion);
+    if (!id.equals(course.id().value()) || documentCourse == null) {
       throw failure(
           Reason.INCOMPATIBLE_COURSE,
           "Expected course "
@@ -135,7 +168,7 @@ public final class JacksonProgressCodec {
             completedIds,
             hints,
             answers);
-    return toDomain(document);
+    return toDomain(document, documentCourse);
   }
 
   /**
@@ -146,7 +179,8 @@ public final class JacksonProgressCodec {
    * @throws IOException if progress is incompatible or serialization fails
    */
   public byte[] encode(CourseProgress progress) throws IOException {
-    if (!course.equals(progress.course())) {
+    Course saved = progress.course();
+    if (!saved.equals(supported.get(saved.contentVersion()))) {
       throw failure(Reason.INCOMPATIBLE_COURSE, "Expected progress for the installed course.");
     }
     List<String> completed = new ArrayList<>();
@@ -171,8 +205,8 @@ public final class JacksonProgressCodec {
             .writeValueAsBytes(
                 new ProgressDocument(
                     1,
-                    course.id().value(),
-                    course.contentVersion(),
+                    saved.id().value(),
+                    saved.contentVersion(),
                     progress.activeLessonId().map(LessonId::value).orElse(null),
                     progress.activeLessonOpenedAtRevision().orElse(null),
                     completed,
@@ -184,8 +218,10 @@ public final class JacksonProgressCodec {
     return bytes;
   }
 
-  private CourseProgress toDomain(ProgressDocument document) throws ProgressReadException {
-    Set<String> ids = new HashSet<>(course.lessonOrder().stream().map(LessonId::value).toList());
+  private CourseProgress toDomain(ProgressDocument document, Course documentCourse)
+      throws ProgressReadException {
+    Set<String> ids =
+        new HashSet<>(documentCourse.lessonOrder().stream().map(LessonId::value).toList());
     Set<String> completed = new HashSet<>(document.completedLessonIds());
     if (completed.size() != document.completedLessonIds().size()
         || !ids.containsAll(completed)
@@ -193,7 +229,10 @@ public final class JacksonProgressCodec {
         || !document
             .completedLessonIds()
             .equals(
-                course.lessonOrder().stream().limit(completed.size()).map(LessonId::value).toList())
+                documentCourse.lessonOrder().stream()
+                    .limit(completed.size())
+                    .map(LessonId::value)
+                    .toList())
         || !completed.equals(document.reflectionAnswers().keySet())) {
       throw failure(
           Reason.INVALID_STATE,
@@ -201,7 +240,7 @@ public final class JacksonProgressCodec {
     }
     try {
       List<LessonProgress> states =
-          course.lessonOrder().stream()
+          documentCourse.lessonOrder().stream()
               .map(
                   id ->
                       new LessonProgress(
@@ -210,7 +249,7 @@ public final class JacksonProgressCodec {
                           Optional.ofNullable(document.reflectionAnswers().get(id.value()))))
               .toList();
       return new CourseProgress(
-          course,
+          documentCourse,
           new ProgressFormatVersion(document.formatVersion()),
           states,
           Optional.ofNullable(document.activeLessonId()).map(LessonId::new),

@@ -71,6 +71,16 @@ public final class JacksonTransitionJournalRepository implements TransitionJourn
     this(course, new SafeWorkspaceFiles());
   }
 
+  /**
+   * Uses the same explicitly supported historical contracts as workspace progress persistence.
+   *
+   * @param codec installed and trusted historical progress codec
+   */
+  public JacksonTransitionJournalRepository(JacksonProgressCodec codec) {
+    progressCodec = Objects.requireNonNull(codec);
+    files = new SafeWorkspaceFiles();
+  }
+
   JacksonTransitionJournalRepository(Course course, SafeWorkspaceFiles files) {
     progressCodec = new JacksonProgressCodec(course);
     this.files = Objects.requireNonNull(files);

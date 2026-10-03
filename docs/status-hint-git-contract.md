@@ -45,8 +45,10 @@ changes refs/remotes, or fetches/pushes.
 When a validated completed older snapshot has a compatible appended installed
 route, the first appended lesson is available. The view contains no future
 instructions, tests, hints, reflection prompts/answers, or solutions. Snapshot
-comparison does not migrate persisted progress or weaken the strict codec;
-append-compatible persisted reading and transition recovery are later tasks.
+comparison does not migrate persisted progress. The strict codec can now read
+explicitly shipped trusted historical definitions; compatible progress remains
+at its original content version until successful disclosure. See the
+[advance contract](lesson-advance-contract.md) for compatibility and recovery.
 
 `hint` selects only the active lesson's domain hint text, then persists its level
 through the existing atomic progress repository before returning the text.

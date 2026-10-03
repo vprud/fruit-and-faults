@@ -112,7 +112,8 @@ the CLI removes the exact journal through a verified secure directory handle.
 The journal contains exactly these fields:
 
 - `formatVersion`: `1`;
-- `fromLessonId`: the prior active lesson ID, or `null` for initial disclosure;
+- `fromLessonId`: the prior active lesson ID, or `null` for initial disclosure
+  or an appended continuation after a completed historical route;
 - `toLessonId`: the exact lesson being opened;
 - `assets`: ordered manifest-style path, asset ID, SHA-256, lesson ID, and policy
   declarations matching the installed lesson;
@@ -130,6 +131,13 @@ fields, coercions, trailing documents, incompatible course content, and invalid
 transitions. Malformed and future versions remain untouched and produce a typed
 diagnostic. Repair or restore the journal, or install compatible course content,
 before retrying; the CLI does not silently replace it.
+
+An append-compatible transition can retain an older content version in
+`expectedProgress` and commit the installed version in `intendedProgress`.
+Both definitions must be explicitly supported trusted snapshots. Prior hints,
+answers, and learner files remain unchanged, and the rebase is committed only
+with successful disclosure. The [advance contract](lesson-advance-contract.md)
+describes version resolution and continuation confirmation.
 
 Recovery first requires progress and manifest to equal their exact prior or
 intended snapshots. Committed progress requires the intended manifest. It then

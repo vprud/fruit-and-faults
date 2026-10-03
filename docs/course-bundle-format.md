@@ -7,7 +7,8 @@ Each resource is limited to 1 MiB, and each declared list to 100 entries.
 
 `course.properties` requires `courseId`, `contentVersion`, `title`, and
 `lessonOrder`. Version 1 is the supported format. `lessonOrder` is a comma-separated
-list of stable lesson IDs. For every ID, `lesson.<id>.directory` specifies a
+list of stable lesson IDs. `contentVersion` is a positive course release version,
+independent of the version-one Properties schema. For every ID, `lesson.<id>.directory` specifies a
 normalized path relative to the bundle root. Directory names never determine
 lesson order.
 
@@ -53,6 +54,25 @@ as correct. Display text, feedback, instructions, and hints must be nonblank.
 Unknown property keys, missing resources, malformed text, invalid values, and
 unsupported versions fail before a course is returned. Errors identify the
 affected resource or property and advise restoring the installed bundle.
+
+An optional `compatibility.properties` at the bundle root explicitly identifies
+supported earlier releases:
+
+```properties
+versions=1
+version.1.root=course/history/v1
+```
+
+Every root must contain a complete immutable historical bundle whose declared
+version matches its manifest entry. Entries must precede the current release.
+The loader checks the historical route and all existing lesson, asset,
+criterion, and reflection contracts against the installed prefix. Missing,
+ambiguous, incompatible, or future history is rejected. No manifest means
+exact current-version support only. Historical assets are loadable only when
+their full declarations belong to a shipped supported definition. Future
+releases must preserve these snapshots and public validator contracts; the
+loader never infers old contracts from workspace IDs. Progress format and
+continuation behavior are described in the [advance contract](lesson-advance-contract.md).
 
 The installed four-lesson bundle discloses one cumulative Java 26 project.
 Lesson 1 contains the build and reused Gradle wrapper, publishing guide,

@@ -6,6 +6,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 import org.fruitandfaults.course.domain.Course;
+import org.fruitandfaults.course.domain.CourseCompatibility;
 import org.fruitandfaults.course.domain.Lesson;
 import org.fruitandfaults.course.domain.LessonId;
 import org.jspecify.annotations.Nullable;
@@ -94,6 +95,30 @@ public record CourseProgress(
     updated.set(index, new LessonProgress(lessonId, state.hintLevel() + 1, Optional.empty()));
     return new CourseProgress(
         course, formatVersion, updated, activeLessonId, activeLessonOpenedAtRevision);
+  }
+
+  /**
+   * Rebinds trusted compatible content in memory, opening appended content only at a supplied
+   * revision.
+   *
+   * @param installed compatible installed route
+   * @param revision current validated local revision when opening a continuation
+   * @return in-memory state; callers commit it only after complete disclosure
+   */
+  public CourseProgress continueWith(Course installed, @Nullable String revision) {
+    CourseCompatibility.requirePrefix(installed, course);
+    List<LessonProgress> updated = new ArrayList<>(lessons);
+    installed.lessonOrder().stream()
+        .skip(lessons.size())
+        .map(id -> new LessonProgress(id, 0, Optional.empty()))
+        .forEach(updated::add);
+    Optional<LessonId> active = activeLessonId;
+    Optional<String> openedAt = activeLessonOpenedAtRevision;
+    if (active.isEmpty() && installed.lessons().size() > lessons.size()) {
+      active = Optional.of(installed.lessonOrder().get(lessons.size()));
+      openedAt = Optional.ofNullable(revision);
+    }
+    return new CourseProgress(installed, formatVersion, updated, active, openedAt);
   }
 
   /** Completes an active lesson with its accepted stable option ID and opens the next lesson. */
