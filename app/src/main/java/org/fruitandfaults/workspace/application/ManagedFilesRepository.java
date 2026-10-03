@@ -20,8 +20,8 @@ public interface ManagedFilesRepository {
 
   /**
    * Creates absent state exclusively or replaces valid state after a flushed temporary write.
-   * Initial creation writes directly to the reserved entry; a crash may leave a partial document
-   * requiring recovery rather than permission to overwrite it.
+   * Initial creation writes directly to the reserved entry; failures may leave a partial or
+   * ambiguous document requiring recovery rather than permission to overwrite or delete it.
    *
    * @param workspaceRoot selected existing learner workspace
    * @param managed validated ownership snapshot
