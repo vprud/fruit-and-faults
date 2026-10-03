@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -153,6 +154,31 @@ class StartCourseTest {
     assertEquals("learner implementation", Files.readString(target.resolve("src/Scaffold.txt")));
     assertArrayEquals(
         before, Files.readAllBytes(target.resolve(".fruit-and-faults/progress.json")));
+  }
+
+  @Test
+  void repeatedStartThroughEquivalentCasingAliasResumesWithoutMutation() throws IOException {
+    target = temporary.toRealPath().resolve("CaseWorkspace with spaces");
+    Files.createDirectory(target);
+    Path alias = target.resolveSibling("caseworkspace with spaces");
+    assumeTrue(
+        Files.isDirectory(alias) && Files.isSameFile(target, alias),
+        "This filesystem does not support equivalent casing aliases.");
+    StartCourse useCase = start(catalog, files, new ProcessGitRepository());
+    StartResult.Created created =
+        assertInstanceOf(
+            StartResult.Created.class, useCase.execute(new StartRequest(target, true)));
+    Files.writeString(target.resolve("src/Scaffold.txt"), "learner implementation");
+    byte[] before = Files.readAllBytes(target.resolve(".fruit-and-faults/progress.json"));
+    for (int attempt = 0; attempt < 2; attempt++) {
+      StartResult.Resumed resumed =
+          assertInstanceOf(
+              StartResult.Resumed.class, useCase.execute(new StartRequest(alias, false)));
+      assertEquals(created.progress(), resumed.progress());
+    }
+    assertArrayEquals(
+        before, Files.readAllBytes(target.resolve(".fruit-and-faults/progress.json")));
+    assertEquals("learner implementation", Files.readString(alias.resolve("src/Scaffold.txt")));
   }
 
   @Test

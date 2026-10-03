@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
@@ -67,6 +68,8 @@ public final class ProcessGitRepository implements GitRepository {
     Path normalized = root.toAbsolutePath().normalize();
     Path gitDirectory = normalized.resolve(".git");
     requireSafeDirectory(gitDirectory);
+    Path canonicalRoot = normalized.toRealPath();
+    Path canonicalGitDirectory = gitDirectory.toRealPath();
     requireSafeRepositoryTree(gitDirectory);
     for (String redirected :
         List.of("commondir", "objects/info/alternates", "objects/info/http-alternates")) {
@@ -94,11 +97,7 @@ public final class ProcessGitRepository implements GitRepository {
           "Existing Git repository could not be validated; preserve it and inspect its local state.",
           failed);
     }
-    String expected = gitDirectory + "\n" + normalized + "\ntrue\n";
-    if (!observed.replace("\r\n", "\n").equals(expected)) {
-      throw new IOException(
-          "Expected Git directory and worktree root to match the selected workspace exactly.");
-    }
+    requireMatchingRepository(observed, canonicalRoot, canonicalGitDirectory);
     requireSafeDirectory(gitDirectory);
     requireSafeRepositoryTree(gitDirectory);
   }
@@ -179,6 +178,32 @@ public final class ProcessGitRepository implements GitRepository {
     }
   }
 
+  private static void requireMatchingRepository(String observed, Path root, Path gitDirectory)
+      throws IOException {
+    List<String> fields = observed.replace("\r\n", "\n").lines().toList();
+    if (fields.size() != 3 || !fields.get(2).equals("true")) {
+      throw new IOException("Expected three complete facts for a non-bare workspace repository.");
+    }
+    try {
+      Path reportedGitDirectory = Path.of(fields.getFirst());
+      Path reportedRoot = Path.of(fields.get(1));
+      if (!reportedGitDirectory.isAbsolute() || !reportedRoot.isAbsolute()) {
+        throw new IOException("Expected absolute Git directory and worktree root paths.");
+      }
+      requireSafeDirectory(reportedGitDirectory);
+      requireSafeDirectory(reportedRoot);
+      if (!Files.isSameFile(gitDirectory, reportedGitDirectory.toRealPath())
+          || !Files.isSameFile(root, reportedRoot.toRealPath())) {
+        throw new IOException(
+            "Expected Git directory and worktree root to match the selected workspace exactly.");
+      }
+    } catch (InvalidPathException invalid) {
+      throw new IOException(
+          "Git reported invalid repository paths; preserve the workspace and inspect its repository.",
+          invalid);
+    }
+  }
+
   private static void requireSafeRepositoryTree(Path gitDirectory) throws IOException {
     Files.walkFileTree(
         gitDirectory,
@@ -229,6 +254,10 @@ public final class ProcessGitRepository implements GitRepository {
     }
     String text =
         StandardCharsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+    if (text.startsWith("\ufeff")) {
+      throw new IOException(
+          "Workspace Git configuration contains a UTF-8 BOM; preserve it and restore BOM-free local configuration.");
+    }
     if (text.lines()
         .map(line -> line.stripLeading().toLowerCase(Locale.ROOT))
         .anyMatch(line -> line.startsWith("[include"))) {
