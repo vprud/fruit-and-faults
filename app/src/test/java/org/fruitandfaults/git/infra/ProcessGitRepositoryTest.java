@@ -17,9 +17,13 @@ import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.fruitandfaults.course.infra.LearnerJourneyFixture;
 import org.fruitandfaults.git.application.GitInitializationException;
+import org.fruitandfaults.validation.infra.BoundedProcessRunner;
+import org.fruitandfaults.validation.infra.ProcessFixture;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -169,12 +173,12 @@ class ProcessGitRepositoryTest {
   @Test
   void repositoryProbePassesEachReadOnlyArgumentSeparately() throws IOException {
     new ProcessGitRepository().initialize(root);
-    FakeProcess process = new FakeProcess(root.resolve(".git") + "\n" + root + "\ntrue\n", 0);
     ProcessGitRepository git =
         new ProcessGitRepository(
             Duration.ofSeconds(1),
             4096,
-            command -> {
+            command -> new FakeProcess("", 0),
+            request -> {
               assertEquals(
                   List.of(
                       "git",
@@ -184,11 +188,93 @@ class ProcessGitRepositoryTest {
                       "--absolute-git-dir",
                       "--show-toplevel",
                       "--is-inside-work-tree"),
-                  command);
-              return process;
+                  request.arguments());
+              return new org.fruitandfaults.validation.application.ProcessResult.Exited(
+                  0,
+                  new org.fruitandfaults.validation.application.ProcessResult.Output(
+                      root.resolve(".git") + "\n" + root + "\ntrue\n", "", false, false));
             });
     git.requireInitialized(root);
-    assertTrue(process.closed);
+  }
+
+  @Test
+  void firstReadOnlyProbeTimeoutTerminatesItsDescendant() throws Exception {
+    new ProcessGitRepository().initialize(root);
+    Path pidFile = root.resolve("child.pid");
+    ProcessGitRepository git = repositoryUsingFixture(pidFile, Duration.ofMillis(250));
+
+    IOException failed = assertThrows(IOException.class, () -> git.requireInitialized(root));
+
+    assertEquals(
+        GitInitializationException.Reason.TIMEOUT,
+        ((GitInitializationException) java.util.Objects.requireNonNull(failed.getCause()))
+            .reason());
+    assertFalse(
+        ProcessHandle.of(Long.parseLong(Files.readString(pidFile)))
+            .map(ProcessHandle::isAlive)
+            .orElse(false));
+  }
+
+  @Test
+  void interruptedFirstReadOnlyProbeTerminatesItsDescendantAndRestoresInterrupt() throws Exception {
+    new ProcessGitRepository().initialize(root);
+    Path pidFile = root.resolve("child.pid");
+    ProcessGitRepository git = repositoryUsingFixture(pidFile, Duration.ofSeconds(10));
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    AtomicBoolean interrupted = new AtomicBoolean();
+    Thread caller =
+        Thread.ofPlatform()
+            .start(
+                () -> {
+                  try {
+                    git.requireInitialized(root);
+                  } catch (Throwable observed) {
+                    failure.set(observed);
+                    interrupted.set(Thread.currentThread().isInterrupted());
+                  }
+                });
+    awaitFile(pidFile);
+    ProcessHandle child = ProcessHandle.of(Long.parseLong(Files.readString(pidFile))).orElseThrow();
+
+    caller.interrupt();
+    caller.join(TimeUnit.SECONDS.toMillis(5));
+
+    assertFalse(caller.isAlive());
+    assertTrue(failure.get() instanceof IOException);
+    assertEquals(
+        GitInitializationException.Reason.INTERRUPTED,
+        ((GitInitializationException)
+                java.util.Objects.requireNonNull(
+                    java.util.Objects.requireNonNull(failure.get()).getCause()))
+            .reason());
+    assertTrue(interrupted.get());
+    assertFalse(child.isAlive());
+  }
+
+  private ProcessGitRepository repositoryUsingFixture(Path pidFile, Duration timeout) {
+    BoundedProcessRunner runner =
+        new BoundedProcessRunner(builder -> builder.command(fixtureCommand(pidFile)));
+    return new ProcessGitRepository(timeout, 4096, command -> new FakeProcess("", 0), runner);
+  }
+
+  private static List<String> fixtureCommand(Path pidFile) {
+    return List.of(
+        Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+        "-cp",
+        System.getProperty("java.class.path"),
+        ProcessFixture.class.getName(),
+        "child",
+        pidFile.toString());
+  }
+
+  private static void awaitFile(Path file) throws IOException, InterruptedException {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    while (Files.notExists(file) && System.nanoTime() < deadline) {
+      Thread.onSpinWait();
+    }
+    if (Files.notExists(file)) {
+      throw new IOException("Process fixture did not publish its child PID");
+    }
   }
 
   @Test
