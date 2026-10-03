@@ -16,6 +16,8 @@ plugins {
     alias(libs.plugins.spotless)
 }
 
+version = "0.1.0"
+
 repositories {
     // Use Maven Central for resolving dependencies.
     mavenCentral()
@@ -32,8 +34,8 @@ dependencies {
 
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
-    // This dependency is used by the application.
-    implementation(libs.guava)
+    implementation(libs.jackson.databind)
+    implementation(libs.jackson.datatype.jdk8)
 }
 
 // Apply a specific Java toolchain to ease working on different environments.
@@ -73,8 +75,25 @@ tasks.withType<JavaCompile>().configureEach {
 }
 
 application {
-    // Define the main class for the application.
-    mainClass = "org.example.App"
+    mainClass = "org.fruitandfaults.cli.FruitAndFaults"
+    applicationName = "fruit-and-faults"
+}
+
+val generateCliVersion =
+    tasks.register("generateCliVersion") {
+        val cliVersion = project.version.toString()
+        val outputDirectory = layout.buildDirectory.dir("generated/resources/cli-version")
+        inputs.property("cliVersion", cliVersion)
+        outputs.dir(outputDirectory)
+        doLast {
+            val outputFile = outputDirectory.get().file("cli-version.txt").asFile
+            outputFile.parentFile.mkdirs()
+            outputFile.writeText("$cliVersion\n", Charsets.UTF_8)
+        }
+    }
+
+sourceSets.main {
+    resources.srcDir(generateCliVersion)
 }
 
 tasks.named<Test>("test") {
