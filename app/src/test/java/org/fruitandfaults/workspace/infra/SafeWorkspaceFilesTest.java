@@ -38,6 +38,59 @@ class SafeWorkspaceFilesTest {
   @TempDir private Path root;
   private final SafeWorkspaceFiles files = new SafeWorkspaceFiles();
 
+  @Test
+  void boundedReadsReturnOnlyRequestedRegularFilesAndRejectSymlinks() throws IOException {
+    Files.write(root.resolve("Game.java"), BYTES);
+    assertEquals(
+        "hello",
+        new String(
+            files.read(root, WorkspacePath.parse("Game.java")).orElseThrow(),
+            StandardCharsets.UTF_8));
+    assertTrue(files.read(root, WorkspacePath.parse("absent/Game.java")).isEmpty());
+    Files.createSymbolicLink(root.resolve("linked"), root.resolve("Game.java"));
+    assertThrows(IOException.class, () -> files.read(root, WorkspacePath.parse("linked")));
+    Files.createDirectory(root.resolve("directory"));
+    assertThrows(IOException.class, () -> files.read(root, WorkspacePath.parse("directory")));
+    Path large = root.resolve("large");
+    try (var channel =
+        java.nio.channels.FileChannel.open(
+            large,
+            java.nio.file.StandardOpenOption.CREATE_NEW,
+            java.nio.file.StandardOpenOption.WRITE)) {
+      channel.position(16_777_216);
+      channel.write(ByteBuffer.wrap(new byte[] {1}));
+    }
+    assertThrows(IOException.class, () -> files.read(root, WorkspacePath.parse("large")));
+  }
+
+  @Test
+  void directorySwapDuringAnchoredReadNeverFollowsTheReplacementSymlink() throws IOException {
+    Path source = Files.createDirectory(root.resolve("src"));
+    Files.write(source.resolve("Game.java"), BYTES);
+    Path foreign = Files.createDirectory(root.resolve("foreign"));
+    Files.writeString(foreign.resolve("Game.java"), "external secret");
+    boolean[] swapped = {false};
+    SafeWorkspaceFiles racing =
+        new SafeWorkspaceFiles(
+            SafeWorkspaceFiles::writeFlushed,
+            SafeWorkspaceFiles::createNewChannel,
+            attributes -> {
+              if (!swapped[0]) {
+                swapped[0] = true;
+                try {
+                  Files.move(source, root.resolve("original-src"));
+                  Files.createSymbolicLink(source, foreign);
+                } catch (IOException failure) {
+                  throw new java.io.UncheckedIOException(failure);
+                }
+              }
+              return attributes.fileKey();
+            });
+    assertThrows(IOException.class, () -> racing.read(root, WorkspacePath.parse("src/Game.java")));
+    assertTrue(swapped[0]);
+    assertEquals("external secret", Files.readString(foreign.resolve("Game.java")));
+  }
+
   @BeforeEach
   void resolveTemporaryDirectoryAlias() throws IOException {
     root = root.toRealPath();

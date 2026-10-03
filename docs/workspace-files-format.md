@@ -47,6 +47,14 @@ fields, wrong field types, malformed facts, and trailing documents are rejected.
 Unsupported format versions and invalid documents remain untouched. The document
 limit is 1 MiB; individual inspected or disclosed assets are limited to 16 MiB.
 
+`WorkspaceFiles.read` returns bounded bytes for one requested regular file,
+or absence when a path segment is missing. It opens the file relative to a
+verified secure directory handle, refuses symlinks, checks entry and parent
+identity after reading, and closes the channel and handle. Validation reuses
+this boundary for required artifacts and compiled main classes. See the
+[lesson check contract](lesson-check-contract.md) for asset-policy feedback and
+cumulative validation.
+
 `WorkspaceFiles.writeNewSafely` reserves each learner destination with
 directory-relative `CREATE_NEW` through its verified secure parent handle, then
 writes and flushes that channel. A file appearing after preflight makes creation
