@@ -19,6 +19,7 @@ import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -39,6 +40,7 @@ import org.fruitandfaults.validation.application.ProcessResult;
 import org.fruitandfaults.validation.application.ProcessRunner;
 import org.fruitandfaults.validation.infra.BoundedProcessRunner;
 import org.fruitandfaults.workspace.domain.WorkspacePath;
+import org.jspecify.annotations.Nullable;
 
 /** Owns bounded Git initialization and read-only repository probes, preserving cancellation. */
 public final class ProcessGitRepository implements GitRepository {
@@ -46,6 +48,7 @@ public final class ProcessGitRepository implements GitRepository {
   private final int outputLimit;
   private final ProcessLauncher launcher;
   private final ProcessRunner statusRunner;
+  private final ConfigIdentityReader configIdentityReader;
 
   /** Uses a ten-second deadline, 64 KiB output cap, and the installed local Git executable. */
   public ProcessGitRepository() {
@@ -62,6 +65,15 @@ public final class ProcessGitRepository implements GitRepository {
 
   ProcessGitRepository(
       Duration timeout, int outputLimit, ProcessLauncher launcher, ProcessRunner statusRunner) {
+    this(timeout, outputLimit, launcher, statusRunner, (name, attributes) -> attributes.fileKey());
+  }
+
+  ProcessGitRepository(
+      Duration timeout,
+      int outputLimit,
+      ProcessLauncher launcher,
+      ProcessRunner statusRunner,
+      ConfigIdentityReader configIdentityReader) {
     if (timeout.isZero()
         || timeout.isNegative()
         || timeout.compareTo(Duration.ofMinutes(1)) > 0
@@ -74,6 +86,7 @@ public final class ProcessGitRepository implements GitRepository {
     this.outputLimit = outputLimit;
     this.launcher = Objects.requireNonNull(launcher);
     this.statusRunner = Objects.requireNonNull(statusRunner);
+    this.configIdentityReader = Objects.requireNonNull(configIdentityReader);
   }
 
   @Override
@@ -102,7 +115,7 @@ public final class ProcessGitRepository implements GitRepository {
             "Git repository redirects storage outside its local .git tree; preserve it and restore a self-contained repository.");
       }
     }
-    requireLocalConfigurations(gitDirectory);
+    requireLocalConfigurations(gitDirectory, configIdentityReader);
     requireNoExecutableFilters(normalized);
     CommandOutput repository;
     try {
@@ -466,7 +479,8 @@ public final class ProcessGitRepository implements GitRepository {
         });
   }
 
-  private static void requireLocalConfigurations(Path gitDirectory) throws IOException {
+  private static void requireLocalConfigurations(
+      Path gitDirectory, ConfigIdentityReader identityReader) throws IOException {
     BasicFileAttributes expected =
         Files.readAttributes(gitDirectory, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
     Object expectedKey = expected.fileKey();
@@ -481,8 +495,8 @@ public final class ProcessGitRepository implements GitRepository {
       if (view == null || !expectedKey.equals(view.readAttributes().fileKey())) {
         throw unsafeInspection();
       }
-      requireLocalConfiguration(secure, Path.of("config"));
-      requireLocalConfiguration(secure, Path.of("config.worktree"));
+      requireLocalConfiguration(secure, Path.of("config"), identityReader);
+      requireLocalConfiguration(secure, Path.of("config.worktree"), identityReader);
       if (!expectedKey.equals(view.readAttributes().fileKey())) {
         throw unsafeInspection();
       }
@@ -494,7 +508,27 @@ public final class ProcessGitRepository implements GitRepository {
     }
   }
 
-  private static void requireLocalConfiguration(SecureDirectoryStream<Path> directory, Path name)
+  private static void requireLocalConfiguration(
+      SecureDirectoryStream<Path> directory, Path name, ConfigIdentityReader identityReader)
+      throws IOException {
+    ConfigSnapshot first = readLocalConfiguration(directory, name, identityReader);
+    ConfigSnapshot second = readLocalConfiguration(directory, name, identityReader);
+    if (first.present() != second.present()) {
+      throw unsafeInspection();
+    }
+    if (!first.present()) {
+      return;
+    }
+    if (!Objects.equals(first.key(), second.key())
+        || first.size() != second.size()
+        || !Arrays.equals(first.bytes(), second.bytes())) {
+      throw unsafeInspection();
+    }
+    requireSafeConfigurationBytes(first.bytes());
+  }
+
+  private static ConfigSnapshot readLocalConfiguration(
+      SecureDirectoryStream<Path> directory, Path name, ConfigIdentityReader identityReader)
       throws IOException {
     BasicFileAttributes before;
     try {
@@ -503,9 +537,9 @@ public final class ProcessGitRepository implements GitRepository {
               .getFileAttributeView(name, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
               .readAttributes();
     } catch (java.nio.file.NoSuchFileException absent) {
-      return;
+      return ConfigSnapshot.absent();
     }
-    Object key = before.fileKey();
+    Object key = identityReader.key(name, before);
     if (!before.isRegularFile() || key == null || before.size() > 65_536) {
       throw new IOException("Git configuration is not a bounded regular file.");
     }
@@ -515,7 +549,7 @@ public final class ProcessGitRepository implements GitRepository {
             name, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
       ByteBuffer buffer = ByteBuffer.allocate((int) before.size() + 1);
       while (buffer.hasRemaining() && channel.read(buffer) != -1) {}
-      bytes = java.util.Arrays.copyOf(buffer.array(), buffer.position());
+      bytes = Arrays.copyOf(buffer.array(), buffer.position());
       if (bytes.length != before.size() || channel.size() != before.size()) {
         throw unsafeInspection();
       }
@@ -524,10 +558,10 @@ public final class ProcessGitRepository implements GitRepository {
         directory
             .getFileAttributeView(name, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
             .readAttributes();
-    if (!key.equals(after.fileKey()) || after.size() != before.size()) {
+    if (!key.equals(identityReader.key(name, after)) || after.size() != before.size()) {
       throw unsafeInspection();
     }
-    requireSafeConfigurationBytes(bytes);
+    return new ConfigSnapshot(true, key, before.size(), bytes);
   }
 
   private static void requireSafeConfigurationBytes(byte[] bytes) throws IOException {
@@ -687,7 +721,46 @@ public final class ProcessGitRepository implements GitRepository {
     Process start(List<String> command) throws IOException;
   }
 
+  @FunctionalInterface
+  interface ConfigIdentityReader {
+    @Nullable Object key(Path name, BasicFileAttributes attributes) throws IOException;
+  }
+
   private record RetainedOutput(String text, boolean truncated) {}
 
   private record CommandOutput(int exitCode, String text, boolean truncated) {}
+
+  private static final class ConfigSnapshot {
+    private final boolean present;
+    private final @Nullable Object key;
+    private final long size;
+    private final byte[] bytes;
+
+    private ConfigSnapshot(boolean present, @Nullable Object key, long size, byte[] bytes) {
+      this.present = present;
+      this.key = key;
+      this.size = size;
+      this.bytes = bytes;
+    }
+
+    private static ConfigSnapshot absent() {
+      return new ConfigSnapshot(false, null, 0, new byte[0]);
+    }
+
+    private boolean present() {
+      return present;
+    }
+
+    private @Nullable Object key() {
+      return key;
+    }
+
+    private long size() {
+      return size;
+    }
+
+    private byte[] bytes() {
+      return bytes;
+    }
+  }
 }
