@@ -1,7 +1,7 @@
 # Status, route, hints, and local Git observations
 
 The application use cases back the Phase A `status`, `list`, and `hint` commands.
-CLI parsing and rendering are wired separately. They do not run Gradle or contact
+CLI parsing and rendering follow the [CLI contract](cli-contract.md). They do not run Gradle or contact
 a remote repository.
 
 `status` reports the active lesson identity, title, goal, and revealed hint level;

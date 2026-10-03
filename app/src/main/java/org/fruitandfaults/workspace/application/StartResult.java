@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import org.fruitandfaults.progress.domain.CourseProgress;
+import org.fruitandfaults.validation.domain.FailureCategory;
 
 /** Explicit start outcomes for CLI presentation without exception or stack-trace output. */
 public sealed interface StartResult {
@@ -67,8 +68,21 @@ public sealed interface StartResult {
    * @param root selected destination
    * @param stage last attempted operation
    * @param diagnostic explanation of retained state and useful next action
+   * @param category stable failure meaning for delivery adapters
    */
-  record Failed(Path root, Stage stage, String diagnostic) implements StartResult {}
+  record Failed(Path root, Stage stage, String diagnostic, FailureCategory category)
+      implements StartResult {
+    /**
+     * Preserves the original constructor's internal-failure meaning.
+     *
+     * @param root selected destination
+     * @param stage last attempted operation
+     * @param diagnostic safe actionable explanation
+     */
+    public Failed(Path root, Stage stage, String diagnostic) {
+      this(root, stage, diagnostic, FailureCategory.INTERNAL_ERROR);
+    }
+  }
 
   /** Last attempted mutation, distinguishing which state may already exist. */
   enum Stage {
@@ -76,6 +90,8 @@ public sealed interface StartResult {
     DIRECTORY_CREATION,
     /** Git init, before any course-owned state is created. */
     GIT_INITIALIZATION,
+    /** Read-only validation before resuming an existing repository. */
+    GIT_INSPECTION,
     /** Exclusive creation of the portable workspace marker. */
     METADATA_CREATION,
     /** Recoverable lesson disclosure with progress committed last. */
