@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayInputStream;
@@ -14,10 +15,12 @@ import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.fruitandfaults.course.infra.LearnerJourneyFixture;
@@ -362,6 +365,72 @@ class ProcessGitRepositoryTest {
     Files.writeString(root.resolve(".git/config.worktree"), "[core]\nignored=value" + (char) 1);
 
     assertConfigurationRejectedBeforeGit();
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"config", "config.worktree"})
+  void doubleReadRejectsEqualSizeEntrySwapAndRetainsUnsafeConfiguration(String name)
+      throws IOException {
+    new ProcessGitRepository().initialize(root);
+    Path target = root.resolve(".git").resolve(name);
+    String unsafe = "[filter \"x\"] clean=x\n";
+    String benignReplacement =
+        "x".repeat(unsafe.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+    Files.writeString(target, unsafe);
+    Object originalKey = Files.readAttributes(target, BasicFileAttributes.class).fileKey();
+    assumeTrue(originalKey != null, "This filesystem does not expose stable file keys.");
+    Path retained = root.resolve(".git").resolve(name + ".retained");
+    AtomicInteger targetReads = new AtomicInteger();
+    ProcessGitRepository guarded =
+        new ProcessGitRepository(
+            Duration.ofSeconds(1),
+            4096,
+            command -> {
+              throw new AssertionError("Configuration swap reached initialization Git");
+            },
+            request -> {
+              throw new AssertionError("Configuration swap reached read-only Git");
+            },
+            (observedName, attributes) -> {
+              if (!observedName.toString().equals(name)) {
+                return attributes.fileKey();
+              }
+              int read = targetReads.incrementAndGet();
+              if (read == 1) {
+                Files.move(target, retained);
+                Files.writeString(target, benignReplacement);
+                return originalKey;
+              }
+              if (read == 2) {
+                Files.delete(target);
+                Files.move(retained, target);
+                return originalKey;
+              }
+              return attributes.fileKey();
+            });
+
+    assertThrows(IOException.class, () -> guarded.requireInitialized(root));
+    assertEquals(unsafe, Files.readString(target));
+    assertFalse(Files.exists(retained));
+    assertEquals(4, targetReads.get());
+  }
+
+  @Test
+  void staticSpecialConfigurationEntryIsRejectedWithoutOpeningIt() throws Exception {
+    assumeFalse(System.getProperty("os.name").startsWith("Windows"), "mkfifo fixture is Unix-only");
+    new ProcessGitRepository().initialize(root);
+    Path target = root.resolve(".git/config.worktree");
+    Process fixture = new ProcessBuilder("mkfifo", target.toString()).start();
+    try {
+      assertTrue(fixture.waitFor(5, TimeUnit.SECONDS));
+      assertEquals(0, fixture.exitValue());
+    } finally {
+      fixture.destroyForcibly();
+      fixture.waitFor(5, TimeUnit.SECONDS);
+    }
+
+    assertConfigurationRejectedBeforeGit();
+    assertTrue(Files.exists(target, java.nio.file.LinkOption.NOFOLLOW_LINKS));
   }
 
   private void assertConfigurationRejectedBeforeGit() {

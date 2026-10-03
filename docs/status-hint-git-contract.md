@@ -22,7 +22,9 @@ reserved names. Both local configuration files are read through an anchored
 `.git` directory handle under a 64 KiB limit before any Git process starts. A
 conservative scanner rejects filters, includes, external attribute files,
 worktree configuration, continuations, and ambiguous bytes without opening any
-referenced path. Inspection disables global/system configuration and attributes,
+referenced path. Two independent anchored reads must retain the same entry
+identity, size, and exact bytes; a same-byte replacement is observably equivalent
+for this scanner. Inspection disables global/system configuration and attributes,
 fsmonitor hooks, optional locks, and lazy fetching, and allows no remote transport
 protocols.
 Every command is a literal argument list with a finite deadline and output cap.
