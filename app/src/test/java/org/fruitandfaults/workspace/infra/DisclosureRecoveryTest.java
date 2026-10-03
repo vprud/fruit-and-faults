@@ -485,6 +485,11 @@ class DisclosureRecoveryTest {
     WorkspaceFiles crashingFiles =
         new WorkspaceFiles() {
           @Override
+          public Optional<byte[]> read(Path path, WorkspacePath target) throws IOException {
+            return files.read(path, target);
+          }
+
+          @Override
           public DisclosurePlan.Observation inspect(Path path, WorkspacePath target)
               throws IOException {
             return files.inspect(path, target);

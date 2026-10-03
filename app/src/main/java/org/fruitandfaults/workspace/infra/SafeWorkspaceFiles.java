@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -63,6 +64,39 @@ public final class SafeWorkspaceFiles implements WorkspaceFiles {
     this.writer = Objects.requireNonNull(writer);
     this.creator = Objects.requireNonNull(creator);
     this.identityReader = Objects.requireNonNull(identityReader);
+  }
+
+  @Override
+  public Optional<byte[]> read(Path root, WorkspacePath path) throws IOException {
+    Path realRoot = verifiedRoot(root);
+    Path target = verifiedTarget(realRoot, path);
+    if (Files.notExists(target, LinkOption.NOFOLLOW_LINKS)) {
+      return Optional.empty();
+    }
+    List<DirectoryIdentity> directories = directoryIdentities(realRoot, target.getParent());
+    try (SecureDirectoryStream<Path> directory =
+        openVerifiedDirectory(
+            realRoot, Objects.requireNonNull(target.getParent()), directories, identityReader)) {
+      Path name = Objects.requireNonNull(target.getFileName());
+      Object key = requireStableKey(attributes(directory, name), identityReader);
+      byte[] bytes;
+      try (SeekableByteChannel channel =
+              directory.newByteChannel(
+                  name, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS));
+          var input = Channels.newInputStream(channel)) {
+        if (channel.size() > MAX_ASSET_BYTES) {
+          throw new IOException("File exceeds the supported 16 MiB read limit.");
+        }
+        bytes = input.readNBytes(MAX_ASSET_BYTES + 1);
+        if (bytes.length > MAX_ASSET_BYTES || channel.size() != bytes.length) {
+          throw new IOException(
+              "File is oversized or changed during reading; stop edits and retry.");
+        }
+      }
+      requireEntryIdentity(directory, name, key);
+      verifyDirectories(directories);
+      return Optional.of(bytes);
+    }
   }
 
   @Override

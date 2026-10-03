@@ -490,6 +490,11 @@ class StartCourseTest {
   }
 
   private static final class FailingFiles implements WorkspaceFiles {
+    @Override
+    public Optional<byte[]> read(Path root, WorkspacePath path) throws IOException {
+      throw new IOException("Start does not read learner source bytes.");
+    }
+
     private final WorkspaceFiles delegate;
     private int created;
 

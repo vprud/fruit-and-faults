@@ -328,6 +328,11 @@ class DiscloseLessonTest {
     }
 
     @Override
+    public Optional<byte[]> read(Path root, WorkspacePath path) throws IOException {
+      throw new IOException("Disclosure does not read learner source bytes.");
+    }
+
+    @Override
     public DisclosurePlan preflight(Path root, List<ManagedFile> requested, ManagedFiles known) {
       Map<WorkspacePath, DisclosurePlan.Observation> facts = new LinkedHashMap<>();
       requested.forEach(file -> facts.put(file.path(), inspect(root, file.path())));

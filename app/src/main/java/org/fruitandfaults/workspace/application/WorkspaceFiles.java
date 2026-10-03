@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.fruitandfaults.workspace.domain.DisclosurePlan;
 import org.fruitandfaults.workspace.domain.ManagedFile;
@@ -12,6 +13,16 @@ import org.fruitandfaults.workspace.domain.WorkspacePath;
 
 /** The filesystem boundary for learner-owned destinations; no operation overwrites them. */
 public interface WorkspaceFiles {
+  /**
+   * Reads at most 16 MiB from one regular file through verified directory handles.
+   *
+   * @param root selected existing workspace
+   * @param path normalized logical file path
+   * @return bounded bytes, or empty when a path segment is absent
+   * @throws IOException if unsafe, unsupported, changed during reading, or oversized
+   */
+  Optional<byte[]> read(Path root, WorkspacePath path) throws IOException;
+
   /**
    * Inspects a logical destination without reading through workspace symlinks.
    *
