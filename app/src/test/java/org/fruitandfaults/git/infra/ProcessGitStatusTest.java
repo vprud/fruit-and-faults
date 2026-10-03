@@ -85,9 +85,9 @@ class ProcessGitStatusTest {
         "test: nested fixture");
     LearnerJourneyFixture.runGit(root, "add", "nested-repository");
     commit();
-    assertEquals(0, git.status(root).trackedChanges());
+    assertThrows(IOException.class, () -> git.status(root));
     Files.writeString(nested.resolve("file.txt"), "changed");
-    assertEquals(1, git.status(root).trackedChanges());
+    assertThrows(IOException.class, () -> git.status(root));
   }
 
   @ParameterizedTest
@@ -124,12 +124,35 @@ class ProcessGitStatusTest {
     if (!windows) {
       script.toFile().setExecutable(true);
     }
-    LearnerJourneyFixture.runGit(repository, "config", "filter.evil.clean", script.toString());
     Files.writeString(repository.resolve(".gitattributes"), "*.txt filter=evil\n");
+    LearnerJourneyFixture.runGit(repository, "add", ".gitattributes");
+    Files.delete(repository.resolve(".gitattributes"));
+    Files.writeString(
+        repository.resolve(".git/config"),
+        "\n[filter \"evil\"] clean = \"" + script.toString().replace("\\", "\\\\") + "\"\n",
+        java.nio.file.StandardOpenOption.APPEND);
     Files.writeString(repository.resolve("file.txt"), "changed\n");
 
     assertThrows(IOException.class, () -> git.status(root));
     assertFalse(Files.exists(marker));
+  }
+
+  @Test
+  void nestedGitdirFileIsRejectedBeforeAnyReadOnlyGitLaunch() throws IOException {
+    Path nested = Files.createDirectory(root.resolve("nested"));
+    Files.writeString(nested.resolve(".git"), "gitdir: " + temporary.resolve("outside") + "\n");
+    ProcessGitRepository guarded =
+        new ProcessGitRepository(
+            Duration.ofSeconds(1),
+            4096,
+            command -> {
+              throw new AssertionError("Nested Git metadata reached initialization launcher");
+            },
+            request -> {
+              throw new AssertionError("Nested Git metadata reached read-only Git launch");
+            });
+
+    assertThrows(IOException.class, () -> guarded.status(root));
   }
 
   @Test
@@ -299,6 +322,9 @@ class ProcessGitStatusTest {
           assertEquals(root, request.workingDirectory());
           assertEquals(timeout, request.timeout());
           assertEquals(limit, request.maxCapturedBytes());
+          if (request.arguments().contains("--get-regexp")) {
+            return new ProcessResult.Exited(1, ProcessResult.Output.empty());
+          }
           try {
             Process process = launcher.start(request.arguments());
             try (InputStream input = process.getInputStream()) {

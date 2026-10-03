@@ -14,8 +14,13 @@ produce an actionable diagnostic and preserve the workspace.
 
 Git inspection first requires the selected workspace to contain its own safe,
 non-bare `.git` repository. It rejects external storage redirects and local
-configuration includes, disables global/system configuration, fsmonitor hooks,
-optional locks, and lazy fetching, and allows no remote transport protocols.
+configuration includes, external attribute files, and executable filter
+configuration. Nested repositories and submodules are intentionally unsupported
+in the Phase A workspace and produce a workspace diagnostic before Git runs.
+Case-ambiguous Git metadata is rejected on filesystems where it aliases the
+reserved names. Inspection disables global/system configuration and attributes,
+fsmonitor hooks, optional locks, and lazy fetching, and allows no remote transport
+protocols.
 Every command is a literal argument list with a finite deadline and output cap.
 Oversized, malformed, incomplete, or unsafe output fails conservatively. Results
 contain change counts and presence flags, never filenames, remote URLs, or
