@@ -22,6 +22,7 @@ public interface ManagedFilesRepository {
    * Creates absent state exclusively or replaces valid state after a flushed temporary write.
    * Initial creation writes directly to the reserved entry; failures may leave a partial or
    * ambiguous document requiring recovery rather than permission to overwrite or delete it.
+   * Successful initialization requires the target's bytes to match the exact encoded snapshot.
    *
    * @param workspaceRoot selected existing learner workspace
    * @param managed validated ownership snapshot

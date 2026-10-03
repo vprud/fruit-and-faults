@@ -36,7 +36,8 @@ public interface WorkspaceFiles {
 
   /**
    * Exclusively creates and writes through a verified directory handle. Bytes are visible during
-   * writing; crash recovery must treat partial entries as conflicts, never as overwrite permission.
+   * writing. Success requires the target's bytes to match the requested bytes. Failures retain
+   * partial or ambiguous targets for recovery, never as overwrite or deletion permission.
    *
    * @param root selected existing workspace
    * @param path missing logical destination
