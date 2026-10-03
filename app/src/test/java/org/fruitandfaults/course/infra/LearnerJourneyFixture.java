@@ -3,13 +3,18 @@ package org.fruitandfaults.course.infra;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -71,6 +76,7 @@ public final class LearnerJourneyFixture {
    * @throws Exception if the owned process fails to launch, is interrupted, or exceeds its deadline
    */
   public static BuildResult build(Path workspace) throws Exception {
+    Path gradleHome = prepareGradleHome(workspace);
     List<String> command = new ArrayList<>();
     if (System.getProperty("os.name").startsWith("Windows")) {
       command.addAll(List.of("cmd", "/d", "/c", "gradlew.bat"));
@@ -84,9 +90,14 @@ public final class LearnerJourneyFixture {
             "--no-daemon",
             "--console=plain",
             "--max-workers=1",
+            "--gradle-user-home=" + gradleHome,
             "-Dorg.gradle.java.installations.auto-download=false",
             "-Dorg.gradle.java.installations.paths=" + System.getProperty("java.home")));
-    return run(workspace, command, Duration.ofSeconds(90));
+    return run(
+        workspace,
+        command,
+        Duration.ofSeconds(90),
+        Map.of("GRADLE_USER_HOME", gradleHome.toString()));
   }
 
   /**
@@ -101,7 +112,7 @@ public final class LearnerJourneyFixture {
     List<String> command = new ArrayList<>(List.of("git"));
     command.addAll(List.of(arguments));
     try {
-      BuildResult result = run(workspace, command, Duration.ofSeconds(10));
+      BuildResult result = run(workspace, command, Duration.ofSeconds(10), Map.of());
       if (result.exitCode() != 0) {
         throw new IOException(result.output());
       }
@@ -143,11 +154,142 @@ public final class LearnerJourneyFixture {
     return count;
   }
 
-  private static BuildResult run(Path workspace, List<String> command, Duration timeout)
+  private static Path prepareGradleHome(Path workspace) throws IOException {
+    Path isolated = workspace.toRealPath().resolve(".gradle/fixture-user-home");
+    if (Files.isRegularFile(isolated.resolve("init.gradle"), LinkOption.NOFOLLOW_LINKS)) {
+      return isolated;
+    }
+    Path source = cachedGradleHome();
+    Properties wrapper = new Properties();
+    try (InputStream input =
+        Files.newInputStream(workspace.resolve("gradle/wrapper/gradle-wrapper.properties"))) {
+      wrapper.load(input);
+    }
+    String archive =
+        Path.of(URI.create(wrapper.getProperty("distributionUrl")).getPath())
+            .getFileName()
+            .toString();
+    String distribution = archive.substring(0, archive.length() - ".zip".length());
+    Path distributionRoot = source.resolve("wrapper/dists").resolve(distribution);
+    Path cachedDistribution;
+    try (var hashes = Files.list(distributionRoot)) {
+      cachedDistribution =
+          hashes
+              .filter(
+                  path ->
+                      Files.isRegularFile(path.resolve(archive + ".ok"), LinkOption.NOFOLLOW_LINKS))
+              .findFirst()
+              .orElseThrow(
+                  () ->
+                      new IOException(
+                          "The learner wrapper distribution must be cached for offline tests."));
+    }
+    Path targetDistribution =
+        isolated
+            .resolve("wrapper/dists")
+            .resolve(distribution)
+            .resolve(cachedDistribution.getFileName());
+    Files.createDirectories(targetDistribution);
+    String payload = distribution.replaceFirst("-(bin|all)$", "");
+    copyPayload(cachedDistribution.resolve(payload), targetDistribution.resolve(payload));
+    Files.copy(
+        cachedDistribution.resolve(archive + ".ok"), targetDistribution.resolve(archive + ".ok"));
+    Path repository = isolated.resolve("offline-repository");
+    for (List<String> module :
+        List.of(
+            List.of("org.junit", "junit-bom", "6.0.1"),
+            List.of("org.junit.jupiter", "junit-jupiter", "6.0.1"),
+            List.of("org.junit.jupiter", "junit-jupiter-api", "6.0.1"),
+            List.of("org.junit.jupiter", "junit-jupiter-params", "6.0.1"),
+            List.of("org.junit.jupiter", "junit-jupiter-engine", "6.0.1"),
+            List.of("org.junit.platform", "junit-platform-commons", "6.0.1"),
+            List.of("org.junit.platform", "junit-platform-engine", "6.0.1"),
+            List.of("org.junit.platform", "junit-platform-launcher", "6.0.1"),
+            List.of("org.opentest4j", "opentest4j", "1.3.0"),
+            List.of("org.apiguardian", "apiguardian-api", "1.1.2"),
+            List.of("org.jspecify", "jspecify", "1.0.0"))) {
+      String group = module.get(0);
+      String artifact = module.get(1);
+      String version = module.get(2);
+      Path cached =
+          source
+              .resolve("caches/modules-2/files-2.1")
+              .resolve(group)
+              .resolve(artifact)
+              .resolve(version);
+      Path target = repository.resolve(group.replace('.', '/')).resolve(artifact).resolve(version);
+      Files.createDirectories(target);
+      Set<String> filenames =
+          Set.of(
+              artifact + "-" + version + ".pom",
+              artifact + "-" + version + ".module",
+              artifact + "-" + version + ".jar");
+      try (var artifacts = Files.walk(cached)) {
+        for (Path file :
+            artifacts
+                .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+                .filter(path -> filenames.contains(path.getFileName().toString()))
+                .toList()) {
+          Files.copy(file, target.resolve(file.getFileName()));
+        }
+      }
+    }
+    Files.writeString(
+        isolated.resolve("init.gradle"),
+        """
+        def expected = new File(System.getenv('GRADLE_USER_HOME')).canonicalFile
+        if (gradle.gradleUserHomeDir.canonicalFile != expected) {
+            throw new GradleException('Fixture Gradle user home must remain isolated.')
+        }
+        println('FIXTURE_GRADLE_HOME=' + expected)
+        gradle.beforeProject { project ->
+            project.afterEvaluate {
+                project.repositories.clear()
+                project.repositories.maven {
+                    url = new File(gradle.gradleUserHomeDir, 'offline-repository').toURI()
+                }
+            }
+        }
+        """);
+    return isolated;
+  }
+
+  private static Path cachedGradleHome() {
+    String configured = System.getenv("GRADLE_USER_HOME");
+    return configured == null
+        ? Path.of(System.getProperty("user.home"), ".gradle")
+        : Path.of(configured);
+  }
+
+  private static void copyPayload(Path source, Path target) throws IOException {
+    try (var paths = Files.walk(source)) {
+      for (Path path : paths.toList()) {
+        if (Files.isSymbolicLink(path)) {
+          throw new IOException("Offline fixture payload must not contain symbolic links.");
+        }
+        Path destination = target.resolve(source.relativize(path));
+        if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+          Files.createDirectories(destination);
+        } else {
+          Files.copy(path, destination);
+        }
+      }
+    }
+  }
+
+  private static BuildResult run(
+      Path workspace, List<String> command, Duration timeout, Map<String, String> environment)
       throws Exception {
     ProcessBuilder builder =
         new ProcessBuilder(command).directory(workspace.toFile()).redirectErrorStream(true);
     builder.environment().put("JAVA_HOME", System.getProperty("java.home"));
+    builder.environment().putAll(environment);
+    if (environment.containsKey("GRADLE_USER_HOME")) {
+      for (String option :
+          List.of("JAVA_OPTS", "GRADLE_OPTS", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS")) {
+        builder.environment().remove(option);
+      }
+    }
     Process process = builder.start();
     CompletableFuture<String> output = new CompletableFuture<>();
     Thread reader =
