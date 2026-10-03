@@ -15,6 +15,7 @@ import org.fruitandfaults.validation.domain.FailureCategory;
 /** Runs cumulative artifact, visible-test, and public-behavior checks without writing progress. */
 public final class CheckLesson {
   private final ArtifactInspector artifacts;
+  private final GradlePreflight preflight;
   private final ProcessRunner runner;
   private final Function<ProcessResult, CheckOutcome> classifier;
   private final Map<String, BehaviorValidator> validators;
@@ -24,6 +25,7 @@ public final class CheckLesson {
    * Composes read-only validation boundaries; no progress-writing port is available.
    *
    * @param artifacts cumulative safe artifact inspection
+   * @param preflight exact local wrapper-cache verification before any Gradle launch
    * @param runner bounded process execution
    * @param classifier conservative classification of build facts
    * @param validators public-behavior validators keyed by stable criterion ID
@@ -31,11 +33,13 @@ public final class CheckLesson {
    */
   public CheckLesson(
       ArtifactInspector artifacts,
+      GradlePreflight preflight,
       ProcessRunner runner,
       Function<ProcessResult, CheckOutcome> classifier,
       Map<String, BehaviorValidator> validators,
       WrapperPlatform platform) {
     this.artifacts = Objects.requireNonNull(artifacts);
+    this.preflight = Objects.requireNonNull(preflight);
     this.runner = Objects.requireNonNull(runner);
     this.classifier = Objects.requireNonNull(classifier);
     this.validators = Map.copyOf(validators);
@@ -62,6 +66,12 @@ public final class CheckLesson {
       if (artifactResult instanceof CheckOutcome.Failed) {
         return artifactResult;
       }
+      GradlePreflight.Preparation preparation = preflight.prepare(request.workspaceRoot());
+      if (preparation instanceof GradlePreflight.Unavailable unavailable) {
+        observations.addAll(unavailable.outcome().diagnostics());
+        return new CheckOutcome.Failed(unavailable.outcome().category(), observations);
+      }
+      GradlePreflight.Ready ready = (GradlePreflight.Ready) preparation;
       List<String> command =
           new ArrayList<>(
               switch (platform) {
@@ -69,6 +79,7 @@ public final class CheckLesson {
                 case UNIX -> List.of("sh", "./gradlew");
               });
       command.addAll(List.of("test", "--offline", "--no-daemon", "--console=plain"));
+      command.addAll(List.of("--gradle-user-home", ready.gradleUserHome().toString()));
       CheckOutcome build =
           classifier.apply(
               runner.run(

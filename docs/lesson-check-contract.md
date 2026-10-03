@@ -7,14 +7,24 @@ later task.
 Checks run in this order:
 
 1. Required artifacts and the disclosed ownership manifest are checked through
-   bounded reads anchored to verified workspace directories. Symlinks, unsafe
-   paths, changed directory identities, and files over 16 MiB block validation.
+   reads anchored to verified workspace directories in owned workers. Each
+   artifact read has a 10-second deadline, 128 MiB heap limit, and fixed-size
+   authenticated fingerprints; source bytes never enter parent diagnostics.
+   Symlinks, unsafe paths, changed identities, files over 16 MiB, and blocking
+   special-file replacement races block validation and terminate the worker.
 2. The complete learner Gradle `test` task runs, including earlier visible tests,
    with a 90-second deadline and a 256 KiB aggregate output budget. Unix uses
    `sh ./gradlew`; Windows uses `cmd /d /c gradlew.bat`. Arguments remain separate.
-   `--offline --no-daemon --console=plain` keeps validation local and predictable.
-   The wrapper distribution and dependencies must already be available locally;
-   cache or toolchain failures are infrastructure diagnostics.
+   Before launch, a deadline-bound inspect-only worker parses the exact wrapper
+   distribution URL and verifies its URL-derived cache key, `.ok` marker, and
+   unambiguous regular Gradle payload. A cold, malformed, unsupported, or
+   symlinked cache stops before the wrapper: `--offline` alone does not prevent
+   wrapper bootstrap downloads. The verified Gradle user home is pinned as a
+   separate `--gradle-user-home` argument. Selection uses `gradle.user.home`,
+   then `GRADLE_USER_HOME`, then native `user.home/.gradle`; relative overrides
+   resolve inside the selected workspace. Cache verification is read-only and
+   never downloads or repairs anything. Dependencies must also already exist;
+   `--offline --no-daemon --console=plain` prevents dependency resolution online.
 3. Every completion criterion through the active lesson runs against freshly
    compiled main classes. Future lesson criteria are not selected.
 
@@ -42,10 +52,14 @@ test classes or application dependencies, or start Spring. Missing classes,
 signature mismatches, initialization/linkage failures, constructor failures,
 thrown methods, and unexpected results become bounded actionable observations.
 Learner exception messages, object strings, local paths, and stack traces are
-excluded from this feedback. The parent accepts only fixed result tokens and
-never copies worker output into learner diagnostics. Premature process exit
-without a complete result is a public-contract failure. Nonterminating methods
-time out; interruption retains the caller's cancellation status through the
+excluded from this feedback. A one-time 32-byte secret is delivered on private
+process stdin, consumed and closed before learner code executes, and never
+included in arguments, environment, stdout, or request diagnostic text. The
+parent accepts only HMAC-authenticated fixed result frames emitted after the
+validator returns; learner stdout is not authoritative and is never copied
+into diagnostics. Forged tokens, copied command arguments, and premature exit
+without authenticated completion are public-contract failures. Nonterminating
+methods time out; interruption retains the caller's cancellation status through the
 bounded process runner. Each worker and its observed descendants have the
 runner's shutdown path, including a two-second cleanup deadline.
 

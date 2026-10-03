@@ -21,10 +21,11 @@ import org.fruitandfaults.course.infra.ClasspathCourseCatalog;
 import org.fruitandfaults.validation.domain.CheckOutcome;
 import org.fruitandfaults.validation.domain.Diagnostic;
 import org.fruitandfaults.validation.domain.FailureCategory;
+import org.fruitandfaults.validation.infra.BoundedProcessRunner;
+import org.fruitandfaults.validation.infra.CachedGradlePreflight;
 import org.fruitandfaults.validation.infra.GradleCheckClassifier;
 import org.fruitandfaults.validation.infra.ManifestArtifactInspector;
 import org.fruitandfaults.workspace.domain.ManagedFiles;
-import org.fruitandfaults.workspace.infra.SafeWorkspaceFiles;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -111,6 +112,62 @@ class CheckLessonTest {
     assertEquals(List.of("artifacts"), events);
     assertTrue(processes.isEmpty());
     assertUnchangedProgress();
+  }
+
+  @Test
+  void coldDistributionStopsBeforeTheWrapperAndNeverMutatesProgress() throws Exception {
+    Path metadata = root.resolve("gradle/wrapper/gradle-wrapper.properties");
+    Files.createDirectories(metadata.getParent());
+    Files.writeString(
+        metadata,
+        "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.7.1-bin.zip\n");
+    Path cold = Files.createDirectory(root.resolve("cold-cache"));
+    CheckLesson checker =
+        new CheckLesson(
+            (workspace, lessons, manifest) -> {
+              events.add("artifacts");
+              return artifacts;
+            },
+            new CachedGradlePreflight(
+                new BoundedProcessRunner(), null, cold.toString(), root.toString()),
+            request -> {
+              throw new AssertionError("Cold cache must not launch the wrapper");
+            },
+            new GradleCheckClassifier()::classify,
+            validators,
+            CheckLesson.WrapperPlatform.UNIX);
+    assertEquals(FailureCategory.MISSING_ARTIFACT, failed(checker.execute(request(0))).category());
+    assertEquals(List.of("artifacts"), events);
+    assertFalse(Files.exists(cold.resolve("wrapper")));
+    assertUnchangedProgress();
+  }
+
+  @Test
+  void cachePreflightPrecedesGradleAndPinsItsVerifiedHomeAsALiteralArgument() {
+    Path verified = root.resolve("cache with spaces; $value");
+    CheckLesson checker =
+        new CheckLesson(
+            (workspace, lessons, manifest) -> {
+              events.add("artifacts");
+              return artifacts;
+            },
+            workspace -> {
+              events.add("cache");
+              assertEquals(root, workspace);
+              return new GradlePreflight.Ready(verified);
+            },
+            request -> {
+              events.add("gradle");
+              int home = request.arguments().indexOf("--gradle-user-home");
+              assertTrue(home >= 0);
+              assertEquals(verified.toString(), request.arguments().get(home + 1));
+              return process;
+            },
+            new GradleCheckClassifier()::classify,
+            validators,
+            CheckLesson.WrapperPlatform.UNIX);
+    assertInstanceOf(CheckOutcome.Passed.class, checker.execute(request(0)));
+    assertEquals(List.of("artifacts", "cache", "gradle", "starter-public-result"), events);
   }
 
   @Test
@@ -242,10 +299,11 @@ class CheckLessonTest {
   void unsafeOrMissingWorkspaceCannotReachTheProcessRunner() throws Exception {
     Path link = root.resolveSibling("linked-workspace");
     Files.createSymbolicLink(link, root);
-    ArtifactInspector real = new ManifestArtifactInspector(new SafeWorkspaceFiles(), catalog);
+    ArtifactInspector real = new ManifestArtifactInspector(new BoundedProcessRunner(), catalog);
     CheckLesson checker =
         new CheckLesson(
             real,
+            workspace -> new GradlePreflight.Ready(root.resolve("verified-cache")),
             request -> {
               throw new AssertionError("Unsafe workspace ran");
             },
@@ -277,7 +335,12 @@ class CheckLessonTest {
           return process;
         };
     return new CheckLesson(
-        inspector, runner, new GradleCheckClassifier()::classify, validators, platform);
+        inspector,
+        workspace -> new GradlePreflight.Ready(root.resolve("verified-cache")),
+        runner,
+        new GradleCheckClassifier()::classify,
+        validators,
+        platform);
   }
 
   private CheckRequest request(int lesson) {

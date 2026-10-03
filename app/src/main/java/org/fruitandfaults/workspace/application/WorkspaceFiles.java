@@ -14,7 +14,9 @@ import org.fruitandfaults.workspace.domain.WorkspacePath;
 /** The filesystem boundary for learner-owned destinations; no operation overwrites them. */
 public interface WorkspaceFiles {
   /**
-   * Reads at most 16 MiB from one regular file through verified directory handles.
+   * Reads at most 16 MiB from one regular file through verified directory handles. Callers must put
+   * untrusted file opens and reads in an owned deadline-bound process: a byte budget alone cannot
+   * bound an operating-system special-file replacement race.
    *
    * @param root selected existing workspace
    * @param path normalized logical file path

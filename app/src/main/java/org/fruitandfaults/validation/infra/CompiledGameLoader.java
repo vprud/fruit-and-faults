@@ -4,16 +4,12 @@ import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
-import java.util.UUID;
 
-import org.fruitandfaults.validation.application.ProcessRequest;
 import org.fruitandfaults.validation.application.ProcessResult;
 import org.fruitandfaults.validation.application.ProcessRunner;
 import org.fruitandfaults.validation.domain.CheckOutcome;
@@ -94,47 +90,11 @@ public final class CompiledGameLoader {
   }
 
   private CheckOutcome validateWorker(Path root, String criterion, String expected) {
-    String nonce = UUID.randomUUID().toString();
-    ProcessResult result;
-    try {
-      Path java =
-          Path.of(
-              System.getProperty("java.home"),
-              "bin",
-              System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java");
-      Path code =
-          Path.of(
-                  Objects.requireNonNull(
-                          CompiledGameLoader.class.getProtectionDomain().getCodeSource())
-                      .getLocation()
-                      .toURI())
-              .toAbsolutePath()
-              .normalize();
-      result =
-          runner.run(
-              new ProcessRequest(
-                  List.of(
-                      java.toString(),
-                      "-Xmx128m",
-                      "-XX:MaxMetaspaceSize=64m",
-                      "-cp",
-                      code.toString(),
-                      ValidationWorker.class.getName(),
-                      criterion,
-                      nonce),
-                  root,
-                  Duration.ofSeconds(10),
-                  16_384));
-    } catch (URISyntaxException | RuntimeException launchFailure) {
-      return failure(
-          FailureCategory.INTERNAL_ERROR,
-          expected,
-          "The isolated validation worker could not be launched.",
-          "Check the installed Java runtime and CLI, then retry.");
-    }
-    return switch (result) {
+    WorkerProcess.Reply reply =
+        WorkerProcess.run(runner, root, ValidationWorker.class, List.of(criterion));
+    return switch (reply.result()) {
       case ProcessResult.TimedOut timed ->
-          withCleanup(
+          WorkerProcess.withCleanup(
               failure(
                   FailureCategory.TIMEOUT,
                   expected,
@@ -142,7 +102,7 @@ public final class CompiledGameLoader {
                   "Inspect nonterminating game methods, then run check again."),
               timed.cleanup());
       case ProcessResult.Interrupted interrupted ->
-          withCleanup(
+          WorkerProcess.withCleanup(
               failure(
                   FailureCategory.INTERRUPTED,
                   expected,
@@ -155,29 +115,12 @@ public final class CompiledGameLoader {
               expected,
               "The isolated validation worker could not be started or safely supervised.",
               "Check the local Java runtime and remaining processes, then retry.");
-      case ProcessResult.Exited exited -> workerOutcome(exited, nonce, expected);
+      case ProcessResult.Exited ignored -> workerOutcome(reply.payload().orElse(""), expected);
     };
   }
 
-  private static CheckOutcome.Failed withCleanup(
-      CheckOutcome.Failed outcome, ProcessResult.Cleanup cleanup) {
-    if (cleanup == ProcessResult.Cleanup.COMPLETE) {
-      return outcome;
-    }
-    var diagnostics = new java.util.ArrayList<>(outcome.diagnostics());
-    diagnostics.add(
-        new Diagnostic(
-            "All owned worker processes and output drains to terminate.",
-            "Worker cleanup remained incomplete or could not be verified.",
-            "Inspect remaining local processes before retrying check."));
-    return new CheckOutcome.Failed(outcome.category(), diagnostics);
-  }
-
-  private static CheckOutcome workerOutcome(
-      ProcessResult.Exited result, String nonce, String expected) {
-    String prefix = "FRUIT_VALIDATION " + nonce + " ";
-    String last = result.output().stdout().lines().reduce((previous, next) -> next).orElse("");
-    if (result.exitCode() == 0 && last.equals(prefix + "PASSED")) {
+  private static CheckOutcome workerOutcome(String token, String expected) {
+    if (token.equals("PASSED")) {
       return new CheckOutcome.Passed(
           List.of(
               new Diagnostic(
@@ -185,14 +128,14 @@ public final class CompiledGameLoader {
                   "The required public behavior was observed.",
                   "Continue with the lesson's next step.")));
     }
-    if (result.exitCode() == 0 && last.equals(prefix + "WORKSPACE_CONFLICT")) {
+    if (token.equals("WORKSPACE_CONFLICT")) {
       return failure(
           FailureCategory.WORKSPACE_CONFLICT,
           expected,
           "Compiled main classes could not be read safely.",
           "Replace unsafe build paths with regular workspace directories and rerun check.");
     }
-    if (result.exitCode() == 0 && last.equals(prefix + "INTERNAL_ERROR")) {
+    if (token.equals("INTERNAL_ERROR")) {
       return failure(
           FailureCategory.INTERNAL_ERROR,
           expected,

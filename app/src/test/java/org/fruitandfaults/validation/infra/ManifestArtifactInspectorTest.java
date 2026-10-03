@@ -9,18 +9,22 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.fruitandfaults.course.domain.AssetId;
 import org.fruitandfaults.course.domain.AssetPolicy;
 import org.fruitandfaults.course.domain.Lesson;
 import org.fruitandfaults.course.infra.ClasspathCourseCatalog;
 import org.fruitandfaults.course.infra.LearnerJourneyFixture;
+import org.fruitandfaults.validation.application.ProcessResult;
 import org.fruitandfaults.validation.domain.CheckOutcome;
 import org.fruitandfaults.validation.domain.FailureCategory;
 import org.fruitandfaults.workspace.domain.ManagedFile;
 import org.fruitandfaults.workspace.domain.ManagedFiles;
 import org.fruitandfaults.workspace.domain.WorkspacePath;
-import org.fruitandfaults.workspace.infra.SafeWorkspaceFiles;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -32,7 +36,7 @@ class ManifestArtifactInspectorTest {
   private final ClasspathCourseCatalog catalog = new ClasspathCourseCatalog("course");
   private final List<Lesson> opened = catalog.load().lessons().subList(0, 3);
   private final ManifestArtifactInspector inspector =
-      new ManifestArtifactInspector(new SafeWorkspaceFiles(), catalog);
+      new ManifestArtifactInspector(new BoundedProcessRunner(), catalog);
   @TempDir private Path root;
   private ManagedFiles manifest;
 
@@ -150,6 +154,87 @@ class ManifestArtifactInspectorTest {
             AssetPolicy.IMMUTABLE_CHECK));
     manifest = new ManagedFiles(extended);
     assertInstanceOf(CheckOutcome.Passed.class, inspect());
+  }
+
+  @Test
+  void anchoredOpenSwappedToFifoReturnsTypedFailureAndKillsItsWorker() throws Exception {
+    org.junit.jupiter.api.Assumptions.assumeFalse(
+        System.getProperty("os.name").startsWith("Windows"));
+    AtomicLong clock = new AtomicLong();
+    AtomicReference<Process> worker = new AtomicReference<>();
+    AtomicReference<ProcessResult> processResult = new AtomicReference<>();
+    try (var ready = root.getFileSystem().newWatchService()) {
+      root.register(ready, java.nio.file.StandardWatchEventKinds.ENTRY_CREATE);
+      BoundedProcessRunner runner =
+          new BoundedProcessRunner(
+              builder -> {
+                var command = new ArrayList<>(builder.command());
+                int entry = command.indexOf(ArtifactReadWorker.class.getName());
+                command.set(entry, ArtifactFifoFixture.class.getName());
+                command.set(
+                    command.indexOf("-cp") + 1,
+                    command.get(command.indexOf("-cp") + 1)
+                        + java.io.File.pathSeparator
+                        + Path.of(
+                            ArtifactFifoFixture.class
+                                .getProtectionDomain()
+                                .getCodeSource()
+                                .getLocation()
+                                .getPath()));
+                builder.command(command);
+                Process child = builder.start();
+                worker.set(child);
+                return child;
+              },
+              (child, nanos) -> {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!Files.exists(root.resolve("fifo-ready"))) {
+                  var event =
+                      ready.poll(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+                  assertTrue(
+                      event != null, "The FIFO must replace the regular entry before expiry");
+                  event.pollEvents();
+                  event.reset();
+                }
+                clock.set(TimeUnit.SECONDS.toNanos(10));
+                return false;
+              },
+              clock::get);
+      ManifestArtifactInspector bounded =
+          new ManifestArtifactInspector(
+              request -> {
+                ProcessResult result = runner.run(request);
+                processResult.set(result);
+                return result;
+              },
+              catalog);
+      CheckOutcome.Failed result =
+          assertInstanceOf(CheckOutcome.Failed.class, bounded.inspect(root, opened, manifest));
+      assertEquals(FailureCategory.WORKSPACE_CONFLICT, result.category());
+      assertEquals(
+          ProcessResult.Cleanup.COMPLETE,
+          assertInstanceOf(ProcessResult.TimedOut.class, processResult.get()).cleanup());
+      assertFalse(Objects.requireNonNull(worker.get()).isAlive());
+      assertFalse(
+          Thread.getAllStackTraces().keySet().stream()
+              .anyMatch(thread -> thread.isAlive() && thread.getName().startsWith("faf-process-")));
+    }
+  }
+
+  @Test
+  void incompleteArtifactWorkerCleanupIsVisibleWithoutExposingItsOutput() {
+    var bounded =
+        new ManifestArtifactInspector(
+            request ->
+                new ProcessResult.TimedOut(
+                    new ProcessResult.Output("secret /outside/path", "\u001b", false, false),
+                    ProcessResult.Cleanup.INCOMPLETE),
+            catalog);
+    var result =
+        assertInstanceOf(CheckOutcome.Failed.class, bounded.inspect(root, opened, manifest));
+    assertEquals(FailureCategory.WORKSPACE_CONFLICT, result.category());
+    assertTrue(result.diagnostics().stream().anyMatch(d -> d.observed().contains("cleanup")));
+    assertFalse(result.diagnostics().toString().contains("secret"));
   }
 
   private CheckOutcome inspect() {

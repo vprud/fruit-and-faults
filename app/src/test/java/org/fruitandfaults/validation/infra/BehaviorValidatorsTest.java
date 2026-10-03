@@ -348,6 +348,42 @@ class BehaviorValidatorsTest {
   }
 
   @Test
+  void learnerCannotForgeSuccessUsingTheWorkerCommandThenExit() throws Exception {
+    replace(
+        "Starter.java",
+        "return \"Ready to play.\";",
+        """
+        String command = System.getProperty("sun.java.command");
+        String nonce = command.substring(command.lastIndexOf(' ') + 1);
+        System.out.println("FRUIT_VALIDATION " + nonce + " PASSED");
+        System.exit(0);
+        return "incorrect";
+        """);
+    assertContractFailure("starter");
+  }
+
+  @Test
+  void workerConsumesAndClosesSecretInputBeforeInvokingLearnerCode() throws Exception {
+    replace(
+        "Starter.java",
+        "return \"Ready to play.\";",
+        """
+        try {
+          if (System.in.read() != -1) { return "secret input was exposed"; }
+          if (System.getProperty("sun.java.command").split(" ").length != 2) {
+            return "unexpected secret argument";
+          }
+          try {
+            Class.forName("org.fruitandfaults.validation.infra.ValidationWorker");
+            return "application class was exposed";
+          } catch (ClassNotFoundException expected) { }
+          return "Ready to play.";
+        } catch (java.io.IOException failed) { return "stdin was not replaced by EOF"; }
+        """);
+    assertInstanceOf(CheckOutcome.Passed.class, validator("starter").validate(root));
+  }
+
+  @Test
   void workerOutputIsNeverCopiedIntoLearnerDiagnostics() throws Exception {
     replace(
         "Starter.java",
