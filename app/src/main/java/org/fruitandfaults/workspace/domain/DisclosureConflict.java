@@ -29,6 +29,8 @@ public record DisclosureConflict(WorkspacePath path, Reason reason) {
     OWNERSHIP_MISMATCH,
     /** A recorded file has changed since disclosure; preserve the learner's bytes. */
     CONTENT_MISMATCH,
+    /** A learner asset overlaps the reserved tool-owned metadata tree. */
+    TOOL_METADATA,
     /** A symlink or non-regular path blocks access; select a real directory or move it aside. */
     UNSAFE_PATH
   }

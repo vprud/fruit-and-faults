@@ -208,7 +208,7 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
     return Optional.of(new StoredManifest(decode(bytes), key, SafeWorkspaceFiles.sha256(bytes)));
   }
 
-  private ManagedFiles decode(byte[] bytes) throws IOException {
+  ManagedFiles decode(byte[] bytes) throws IOException {
     if (bytes.length > MAX_DOCUMENT_BYTES) {
       throw failure(
           ManagedFilesReadException.Reason.MALFORMED, "Document exceeds the supported 1 MiB size.");
@@ -264,7 +264,7 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
     }
   }
 
-  private byte[] encode(ManagedFiles managed) throws IOException {
+  byte[] encode(ManagedFiles managed) throws IOException {
     requireUnambiguous(managed);
     List<FileDocument> files =
         managed.files().stream()

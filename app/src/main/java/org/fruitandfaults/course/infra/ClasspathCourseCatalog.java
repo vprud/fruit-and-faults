@@ -15,6 +15,7 @@ import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 
+import org.fruitandfaults.course.application.CourseAssets;
 import org.fruitandfaults.course.application.CourseCatalog;
 import org.fruitandfaults.course.domain.AssetId;
 import org.fruitandfaults.course.domain.AssetPolicy;
@@ -29,7 +30,7 @@ import org.fruitandfaults.course.domain.ReflectionQuestion;
 import org.jspecify.annotations.Nullable;
 
 /** Loads explicitly declared Properties metadata and UTF-8 text from the classpath. */
-public final class ClasspathCourseCatalog implements CourseCatalog {
+public final class ClasspathCourseCatalog implements CourseCatalog, CourseAssets {
   private static final int MAX_RESOURCE_BYTES = 1_048_576;
   private static final int MAX_LIST_ENTRIES = 100;
   private final String root;
@@ -88,6 +89,19 @@ public final class ClasspathCourseCatalog implements CourseCatalog {
     } catch (IllegalArgumentException failure) {
       throw invalid(root + "/course.properties", failure.getMessage(), failure);
     }
+  }
+
+  @Override
+  public byte[] load(LessonAsset asset) {
+    String resource = relativePath(asset.resourcePath());
+    if (!resource.startsWith(root + "/")) {
+      throw new IllegalArgumentException("Expected an asset within the installed course bundle.");
+    }
+    byte[] raw = bytes(resource);
+    if (!sha256(raw).equals(asset.sha256())) {
+      throw new IllegalArgumentException("Expected asset bytes matching the course declaration.");
+    }
+    return raw;
   }
 
   private Lesson lesson(String directory, LessonId expectedId) {
