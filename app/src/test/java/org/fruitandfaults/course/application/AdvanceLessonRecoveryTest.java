@@ -35,6 +35,7 @@ import org.fruitandfaults.workspace.domain.ManagedFiles;
 import org.fruitandfaults.workspace.domain.TransitionJournal;
 import org.fruitandfaults.workspace.domain.WorkspacePath;
 import org.fruitandfaults.workspace.infra.JacksonTransitionJournalRepository;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -282,6 +283,75 @@ class AdvanceLessonRecoveryTest {
             .execute(new AdvanceRequest(fixture.root(), Optional.empty(), confirmed)));
     assertArrayEquals(oldProgress, bytes(fixture));
     assertTrue(journals.load(fixture.root()).isPresent());
+  }
+
+  @Test
+  void journalReplacedDuringFinalGitInspectionCannotChangeValidatedRecovery() throws IOException {
+    var fixture = new CourseApplicationFixture(temporary);
+    var journals = new JacksonTransitionJournalRepository(fixture.course());
+    useCase(fixture, crashing(fixture, journals, "journal"), journals, true)
+        .execute(answer(fixture, "compile-before-tests"));
+    Path journalPath = fixture.root().resolve(".fruit-and-faults/transition.json");
+    byte[] oldProgress = bytes(fixture);
+    Path manifestPath = fixture.root().resolve(".fruit-and-faults/managed-files.json");
+    byte[] oldManifest = Files.readAllBytes(manifestPath);
+    AtomicInteger inspections = new AtomicInteger();
+    GitRepository replacingGit =
+        new GitRepository() {
+          @Override
+          public void initialize(Path root) {
+            throw new AssertionError();
+          }
+
+          @Override
+          public void requireInitialized(Path root) {}
+
+          @Override
+          public GitStatus status(Path root) throws IOException {
+            if (inspections.incrementAndGet() == 2) {
+              var mapper = new ObjectMapper();
+              var document = mapper.readTree(Files.readAllBytes(journalPath));
+              ((ObjectNode) Objects.requireNonNull(document.get("intendedProgress")))
+                  .put("activeLessonOpenedAtRevision", "b".repeat(40));
+              Files.write(journalPath, mapper.writeValueAsBytes(document));
+            }
+            return new GitStatus(Optional.of("a".repeat(40)), 3, 0, false, false);
+          }
+        };
+    var disclosure =
+        new DiscloseLesson(
+            fixture.catalog(), fixture.files(), fixture.manifests(), fixture.progress(), journals);
+    var advance =
+        new AdvanceLesson(
+            fixture.catalog(),
+            fixture.progress(),
+            fixture.manifests(),
+            journals,
+            request -> {
+              throw new AssertionError("Recovery must not recheck partial new work");
+            },
+            replacingGit,
+            disclosure);
+
+    assertInstanceOf(
+        AdvanceResult.Conflict.class,
+        advance.execute(new AdvanceRequest(fixture.root(), Optional.empty(), true)));
+    assertEquals(2, inspections.get());
+    assertArrayEquals(oldProgress, bytes(fixture));
+    assertArrayEquals(oldManifest, Files.readAllBytes(manifestPath));
+    assertEquals(
+        Optional.of("b".repeat(40)),
+        journals
+            .load(fixture.root())
+            .orElseThrow()
+            .intendedProgress()
+            .activeLessonOpenedAtRevision());
+    assertTrue(
+        Files.notExists(
+            fixture.root().resolve("src/main/java/org/fruitandfaults/game/Direction.java")));
+    assertTrue(
+        Files.notExists(
+            fixture.root().resolve("src/main/java/org/fruitandfaults/game/Coordinate.java")));
   }
 
   private AdvanceLesson useCase(

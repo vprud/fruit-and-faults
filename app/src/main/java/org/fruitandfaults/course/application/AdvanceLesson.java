@@ -264,10 +264,9 @@ public final class AdvanceLesson {
           (DisclosurePlan.Applicable) plan,
           journal.intendedProgress(),
           advice(status));
-    if (!journals.load(request.root()).equals(Optional.of(journal))
-        || !git.status(request.root()).headRevision().equals(status.headRevision()))
-      return conflict(List.of());
-    DisclosureResult applied = disclosure.recover(request.root());
+    if (!git.status(request.root()).headRevision().equals(status.headRevision())
+        || !journals.load(request.root()).equals(Optional.of(journal))) return conflict(List.of());
+    DisclosureResult applied = disclosure.recover(request.root(), journal);
     if (applied instanceof DisclosureResult.Conflict rejected) return conflict(rejected.paths());
     return new AdvanceResult.Recovered(journal.intendedProgress(), target, advice(status));
   }

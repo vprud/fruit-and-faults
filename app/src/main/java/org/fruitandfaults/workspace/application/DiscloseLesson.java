@@ -153,8 +153,24 @@ public final class DiscloseLesson {
   public DisclosureResult recover(Path root) throws IOException {
     Optional<TransitionJournal> journal = journals.load(root);
     return journal.isPresent()
-        ? resume(root, journal.orElseThrow())
+        ? recover(root, journal.orElseThrow())
         : new DisclosureResult.Success(TransitionStatus.ALREADY_APPLIED);
+  }
+
+  /**
+   * Recovers only the exact immutable plan previously validated by the caller, rechecking the
+   * persisted journal before each mutation.
+   *
+   * @param root selected existing workspace
+   * @param expected exact journal snapshot bound to the caller's validated transition
+   * @return recovered or conflict when the pending plan is missing or different
+   * @throws IOException if journal validation, persistence, or safe access fails
+   */
+  public DisclosureResult recover(Path root, TransitionJournal expected) throws IOException {
+    if (!journals.load(root).equals(Optional.of(expected))) {
+      return conflict(DisclosureResult.Reason.PLAN_MISMATCH);
+    }
+    return resume(root, expected);
   }
 
   private DisclosureResult resume(Path root, TransitionJournal journal) throws IOException {
@@ -186,6 +202,9 @@ public final class DiscloseLesson {
           DisclosureResult.Reason.ASSET_CONFLICT, rejected.conflicts());
     }
     for (ManagedFile file : ((DisclosurePlan.Applicable) check).filesToCreate()) {
+      if (!journals.load(root).equals(Optional.of(journal))) {
+        return conflict(DisclosureResult.Reason.PLAN_MISMATCH);
+      }
       files.writeNewSafely(root, file.path(), Objects.requireNonNull(contents.get(file.path())));
     }
     DisclosurePlan verified = files.preflight(root, journal.assets(), journal.intendedManaged());
@@ -201,6 +220,9 @@ public final class DiscloseLesson {
       return conflict(DisclosureResult.Reason.STATE_MISMATCH);
     }
     if (!published) {
+      if (!journals.load(root).equals(Optional.of(journal))) {
+        return conflict(DisclosureResult.Reason.PLAN_MISMATCH);
+      }
       manifests.save(root, journal.intendedManaged());
     }
     if (!manifests.load(root).equals(Optional.of(journal.intendedManaged()))) {
@@ -228,6 +250,9 @@ public final class DiscloseLesson {
     changedAssets = requireCompleteAssets(root, journal);
     if (changedAssets.isPresent()) {
       return changedAssets.orElseThrow();
+    }
+    if (!journals.load(root).equals(Optional.of(journal))) {
+      return conflict(DisclosureResult.Reason.PLAN_MISMATCH);
     }
     journals.remove(root, journal);
     return new DisclosureResult.Success(committed ? TransitionStatus.ALREADY_APPLIED : status);
