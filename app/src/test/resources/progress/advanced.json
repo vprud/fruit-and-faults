@@ -1,0 +1,10 @@
+{
+  "formatVersion": 1,
+  "courseId": "fruit-and-faults",
+  "courseContentVersion": 1,
+  "activeLessonId": "coordinate-direction",
+  "activeLessonOpenedAtRevision": "abc123",
+  "completedLessonIds": ["first-run"],
+  "revealedHintLevels": {"first-run": 2},
+  "reflectionAnswers": {"first-run": "compile-before-tests"}
+}

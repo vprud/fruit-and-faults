@@ -52,6 +52,7 @@ spotless {
                 .get(),
         )
         formatAnnotations()
+        importOrder("#", "java", "javax", "")
     }
 
     kotlinGradle {

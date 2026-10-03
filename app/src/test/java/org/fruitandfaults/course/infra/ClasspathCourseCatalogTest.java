@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.UnaryOperator;
+
 import org.fruitandfaults.course.domain.AssetPolicy;
 import org.fruitandfaults.course.domain.Course;
 import org.fruitandfaults.course.domain.Lesson;
