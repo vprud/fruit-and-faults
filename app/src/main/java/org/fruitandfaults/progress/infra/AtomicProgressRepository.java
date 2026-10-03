@@ -5,22 +5,30 @@ import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.SecureDirectoryStream;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Objects;
 import java.util.Optional;
 
 import org.fruitandfaults.progress.application.ProgressRepository;
 import org.fruitandfaults.progress.domain.CourseProgress;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Stores progress in .fruit-and-faults/progress.json using flushed same-directory temporary files.
  * When ATOMIC_MOVE is unsupported, a replace move is used only after the new file is complete; the
  * previous file remains in place throughout writing. The fallback cannot promise crash-atomic
- * replacement on every filesystem.
+ * replacement on every filesystem. Failed-write cleanup uses the original directory handle and
+ * temporary-file identity; when the provider cannot verify these safely, the temporary file is
+ * retained rather than deleting through a possibly replaced pathname.
  */
 public final class AtomicProgressRepository implements ProgressRepository {
   private final JacksonProgressCodec codec;
@@ -66,18 +74,42 @@ public final class AtomicProgressRepository implements ProgressRepository {
       Files.createDirectory(file.getParent());
     }
     verifyStatePath(file);
-    Path temporary = Files.createTempFile(file.getParent(), "progress-", ".tmp");
-    try {
-      writer.write(temporary, bytes);
-      verifyStatePath(file);
+    try (DirectoryStream<Path> directory = Files.newDirectoryStream(file.getParent())) {
+      Path temporary = Files.createTempFile(file.getParent(), "progress-", ".tmp");
+      @Nullable Object temporaryKey =
+          Files.readAttributes(temporary, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS)
+              .fileKey();
       try {
-        mover.move(temporary, file, true);
-      } catch (AtomicMoveNotSupportedException unsupported) {
+        writer.write(temporary, bytes);
         verifyStatePath(file);
-        mover.move(temporary, file, false);
+        try {
+          mover.move(temporary, file, true);
+        } catch (AtomicMoveNotSupportedException unsupported) {
+          verifyStatePath(file);
+          mover.move(temporary, file, false);
+        }
+      } finally {
+        cleanupOwnedTemporary(directory, temporary, temporaryKey);
       }
-    } finally {
-      Files.deleteIfExists(temporary);
+    }
+  }
+
+  private static void cleanupOwnedTemporary(
+      DirectoryStream<Path> directory, Path temporary, @Nullable Object originalKey)
+      throws IOException {
+    if (!(directory instanceof SecureDirectoryStream<Path> secure) || originalKey == null) {
+      return;
+    }
+    Path basename = Objects.requireNonNull(temporary.getFileName());
+    try {
+      BasicFileAttributeView view =
+          secure.getFileAttributeView(
+              basename, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+      if (view != null && originalKey.equals(view.readAttributes().fileKey())) {
+        secure.deleteFile(basename);
+      }
+    } catch (NoSuchFileException alreadyMoved) {
+      // Successful replacement has already removed the temporary directory entry.
     }
   }
 

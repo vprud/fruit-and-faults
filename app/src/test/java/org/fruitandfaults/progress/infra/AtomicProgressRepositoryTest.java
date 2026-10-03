@@ -66,6 +66,59 @@ class AtomicProgressRepositoryTest {
   }
 
   @Test
+  void cleanupCannotDeleteOutsideSentinelAfterMetadataDirectoryIsReplacedBySymlink()
+      throws IOException {
+    Path workspace = Files.createDirectory(root.resolve("workspace"));
+    Path outside = Files.createDirectory(root.resolve("outside"));
+    Path renamedMetadata = workspace.resolve("renamed-metadata");
+    AtomicProgressRepository repository =
+        new AtomicProgressRepository(
+            codec,
+            (temporary, bytes) -> {
+              Path basename = temporary.getFileName();
+              Files.writeString(outside.resolve(basename), "outside sentinel");
+              Files.move(workspace.resolve(".fruit-and-faults"), renamedMetadata);
+              Files.createSymbolicLink(workspace.resolve(".fruit-and-faults"), outside);
+              throw new IOException("injected metadata directory replacement");
+            },
+            (source, target, atomic) -> {
+              throw new AssertionError("A failed write must not replace state");
+            });
+
+    assertThrows(IOException.class, () -> repository.save(workspace, opening));
+
+    try (var outsideFiles = Files.list(outside)) {
+      java.util.List<Path> sentinels = outsideFiles.toList();
+      assertEquals(1, sentinels.size());
+      assertEquals("outside sentinel", Files.readString(sentinels.getFirst()));
+    }
+  }
+
+  @Test
+  void cleanupPreservesUnrelatedReplacementOfTemporaryFile() throws IOException {
+    AtomicProgressRepository repository =
+        new AtomicProgressRepository(
+            codec,
+            (temporary, bytes) -> {
+              Files.move(temporary, root.resolve("relocated-owned-temporary"));
+              Files.writeString(temporary, "replacement sentinel");
+              throw new IOException("injected temporary file replacement");
+            },
+            (source, target, atomic) -> {
+              throw new AssertionError("A failed write must not replace state");
+            });
+
+    assertThrows(IOException.class, () -> repository.save(root, opening));
+
+    try (var metadataFiles = Files.list(root.resolve(".fruit-and-faults"))) {
+      java.util.List<Path> files = metadataFiles.toList();
+      assertEquals(1, files.size());
+      assertEquals("replacement sentinel", Files.readString(files.getFirst()));
+    }
+    assertTrue(Files.exists(root.resolve("relocated-owned-temporary")));
+  }
+
+  @Test
   void moveFailurePreservesLastValidFileAndCleansOwnedTemporaryFile() throws IOException {
     new AtomicProgressRepository(codec).save(root, opening);
     byte[] before = Files.readAllBytes(stateFile());
