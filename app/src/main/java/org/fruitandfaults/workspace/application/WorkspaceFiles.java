@@ -35,14 +35,15 @@ public interface WorkspaceFiles {
       throws IOException;
 
   /**
-   * Exclusively publishes complete bytes from a same-directory temporary file.
+   * Exclusively creates and writes through a verified directory handle. Bytes are visible during
+   * writing; crash recovery must treat partial entries as conflicts, never as overwrite permission.
    *
    * @param root selected existing workspace
    * @param path missing logical destination
    * @param bytes raw asset bytes
    * @throws IOException if unsafe, already present, unsupported, or writing fails
    */
-  void writeNewAtomically(Path root, WorkspacePath path, byte[] bytes) throws IOException;
+  void writeNewSafely(Path root, WorkspacePath path, byte[] bytes) throws IOException;
 
   /**
    * Rechecks every target and source fingerprint before the first batch write. Multi-file crash
@@ -53,6 +54,6 @@ public interface WorkspaceFiles {
    * @param contents raw bytes for each missing file
    * @throws IOException if any preflight fact or source bytes no longer match
    */
-  void writeNewAtomically(Path root, DisclosurePlan plan, Map<WorkspacePath, byte[]> contents)
+  void writeNewSafely(Path root, DisclosurePlan plan, Map<WorkspacePath, byte[]> contents)
       throws IOException;
 }

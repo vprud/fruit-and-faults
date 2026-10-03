@@ -3,19 +3,21 @@ package org.fruitandfaults.workspace.infra;
 import java.io.IOException;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
+import java.nio.file.SecureDirectoryStream;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.StreamReadFeature;
@@ -36,10 +38,9 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * Strict version-one ownership JSON in .fruit-and-faults/managed-files.json. Existing malformed or
- * future documents are preserved. Complete same-directory writes replace only the observed valid
- * state; an unsupported atomic move falls back to a replacement move after revalidation, which
- * cannot promise crash-atomic replacement on every filesystem. Cleanup shares the workspace
- * boundary's original-directory and temporary-file identity discipline.
+ * future documents are preserved. Same-directory temporary creation, writes, and atomic replacement
+ * use a verified secure directory handle. Unsupported atomic replacement fails without a
+ * destructive fallback. Cleanup verifies the original entry identity through the same handle.
  */
 public final class JacksonManagedFilesRepository implements ManagedFilesRepository {
   static final int MAX_DOCUMENT_BYTES = 1_048_576;
@@ -55,15 +56,26 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
           .build();
   private final SafeWorkspaceFiles.DocumentWriter writer;
   private final DocumentMover mover;
+  private final SafeWorkspaceFiles.IdentityReader identityReader;
 
   /** Uses strict JSON validation, flushed writes, and atomic replacement when supported. */
   public JacksonManagedFilesRepository() {
-    this(SafeWorkspaceFiles::writeFlushed, JacksonManagedFilesRepository::move);
+    this(
+        SafeWorkspaceFiles::writeFlushed,
+        (directory, temporary, target) -> directory.move(temporary, directory, target));
   }
 
   JacksonManagedFilesRepository(SafeWorkspaceFiles.DocumentWriter writer, DocumentMover mover) {
+    this(writer, mover, BasicFileAttributes::fileKey);
+  }
+
+  JacksonManagedFilesRepository(
+      SafeWorkspaceFiles.DocumentWriter writer,
+      DocumentMover mover,
+      SafeWorkspaceFiles.IdentityReader identityReader) {
     this.writer = Objects.requireNonNull(writer);
     this.mover = Objects.requireNonNull(mover);
+    this.identityReader = Objects.requireNonNull(identityReader);
   }
 
   @Override
@@ -74,36 +86,43 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
   @Override
   public void save(Path workspaceRoot, ManagedFiles managed) throws IOException {
     Path root = SafeWorkspaceFiles.verifiedRoot(workspaceRoot);
+    SafeWorkspaceFiles.requireStableKey(SafeWorkspaceFiles.attributes(root), identityReader);
     Optional<StoredManifest> previous = read(root);
     byte[] bytes = encode(managed);
     Path file = SafeWorkspaceFiles.verifiedTarget(root, MANIFEST);
     SafeWorkspaceFiles.createVerifiedParents(root, file);
     List<SafeWorkspaceFiles.DirectoryIdentity> directories =
         SafeWorkspaceFiles.directoryIdentities(root, file.getParent());
-    try (DirectoryStream<Path> directory =
-        Files.newDirectoryStream(Objects.requireNonNull(file.getParent()))) {
-      Path temporary = Files.createTempFile(file.getParent(), "managed-files-", ".tmp");
-      @Nullable Object key = SafeWorkspaceFiles.attributes(temporary).fileKey();
+    try (SecureDirectoryStream<Path> directory =
+        SafeWorkspaceFiles.openVerifiedDirectory(
+            root, Objects.requireNonNull(file.getParent()), directories, identityReader)) {
+      Path temporary = Path.of("managed-files-" + UUID.randomUUID() + ".tmp");
+      Path target = Objects.requireNonNull(file.getFileName());
+      @Nullable Object key = null;
       try {
-        writer.write(temporary, bytes);
-        verifyBeforeReplacement(root, previous, directories, temporary, key);
-        if (previous.isEmpty()) {
-          try {
-            Files.createLink(file, temporary);
-          } catch (UnsupportedOperationException unsupported) {
-            throw new WorkspaceWriteException(
-                WorkspaceWriteException.Reason.UNSUPPORTED_PUBLICATION,
-                "This filesystem cannot exclusively initialize the ownership manifest. Select a local filesystem with hard-link support.",
-                unsupported);
-          }
-        } else {
-          try {
-            mover.move(temporary, file, true);
-          } catch (AtomicMoveNotSupportedException unsupported) {
-            verifyBeforeReplacement(root, previous, directories, temporary, key);
-            mover.move(temporary, file, false);
-          }
+        try (SeekableByteChannel channel =
+            SafeWorkspaceFiles.createNewChannel(directory, temporary)) {
+          key =
+              SafeWorkspaceFiles.requireStableKey(
+                  SafeWorkspaceFiles.attributes(directory, temporary), identityReader);
+          FileChannel fileChannel = SafeWorkspaceFiles.requireFlushable(channel);
+          writer.write(fileChannel, bytes);
+          fileChannel.force(true);
         }
+        verifyBeforeReplacement(root, previous, directories, directory, temporary, key);
+        mover.move(directory, temporary, target);
+        SafeWorkspaceFiles.verifyDirectories(directories);
+      } catch (WorkspaceWriteException | ManagedFilesReadException invalid) {
+        throw invalid;
+      } catch (UnsupportedOperationException | AtomicMoveNotSupportedException unsupported) {
+        throw SafeWorkspaceFiles.unsupported(
+            "Atomic directory-relative manifest replacement is unavailable; the previous manifest is preserved. Select a supported filesystem.",
+            unsupported);
+      } catch (IOException failed) {
+        throw new WorkspaceWriteException(
+            WorkspaceWriteException.Reason.PUBLICATION_FAILED,
+            "Manifest replacement failed; preserve the current state and retry after inspecting the workspace.",
+            failed);
       } finally {
         SafeWorkspaceFiles.cleanupOwnedTemporary(directory, temporary, key);
       }
@@ -114,11 +133,12 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
       Path root,
       Optional<StoredManifest> previous,
       List<SafeWorkspaceFiles.DirectoryIdentity> directories,
+      SecureDirectoryStream<Path> directory,
       Path temporary,
       @Nullable Object key)
       throws IOException {
     SafeWorkspaceFiles.verifyDirectories(directories);
-    SafeWorkspaceFiles.requireTemporaryIdentity(temporary, key);
+    SafeWorkspaceFiles.requireEntryIdentity(directory, temporary, key);
     if (!previous.equals(read(root))) {
       throw new IOException(
           "Ownership manifest changed during writing; preserve the current file and retry.");
@@ -194,7 +214,9 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
                 new LessonId(text(required(entry, "lessonId"))),
                 AssetPolicy.valueOf(text(required(entry, "policy")))));
       }
-      return new ManagedFiles(files);
+      ManagedFiles managed = new ManagedFiles(files);
+      requireUnambiguous(managed);
+      return managed;
     } catch (IllegalArgumentException invalid) {
       throw failure(
           ManagedFilesReadException.Reason.INVALID_STATE,
@@ -203,6 +225,7 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
   }
 
   private byte[] encode(ManagedFiles managed) throws IOException {
+    requireUnambiguous(managed);
     List<FileDocument> files =
         managed.files().stream()
             .map(
@@ -222,6 +245,14 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
           "Ownership snapshot exceeds the supported document size.");
     }
     return bytes;
+  }
+
+  private static void requireUnambiguous(ManagedFiles managed) throws ManagedFilesReadException {
+    if (!managed.aliasConflicts().isEmpty()) {
+      throw failure(
+          ManagedFilesReadException.Reason.INVALID_STATE,
+          "Case or Unicode aliases make ownership ambiguous; repair or restore the manifest.");
+    }
   }
 
   private static void requireFields(JsonNode node, Set<String> expected)
@@ -261,15 +292,6 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
     return new ManagedFilesReadException(reason, "Invalid managed-files manifest: " + message);
   }
 
-  private static void move(Path temporary, Path target, boolean atomic) throws IOException {
-    if (atomic) {
-      Files.move(
-          temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-    } else {
-      Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
-    }
-  }
-
   private record StoredManifest(ManagedFiles managed, @Nullable Object key, String sha256) {}
 
   private record ManifestDocument(int formatVersion, List<FileDocument> files) {}
@@ -279,6 +301,7 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
 
   @FunctionalInterface
   interface DocumentMover {
-    void move(Path temporary, Path target, boolean atomic) throws IOException;
+    void move(SecureDirectoryStream<Path> directory, Path temporary, Path target)
+        throws IOException;
   }
 }
