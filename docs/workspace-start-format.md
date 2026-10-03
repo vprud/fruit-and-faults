@@ -46,6 +46,12 @@ and external Git templates are disabled. Cancellation terminates the owned
 process and preserves the calling thread's interrupt flag. Default failure
 messages include the failure category or exit status without captured output;
 bounded output is available through the Git failure only for explicit debugging.
+`StartResult.Failed` now retains a typed failure category for CLI mapping:
+Git timeout/interruption map to exit 5, initialization infrastructure failures
+map to 10, and safe filesystem publication failures map to 3. Its original
+three-argument constructor and accessors remain available. Read-only resume
+inspection also preserves Git timeout/interruption categories; diagnostics are
+never parsed to determine an exit code. See the [CLI contract](cli-contract.md).
 
 The committed marker contains exactly two fields:
 

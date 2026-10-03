@@ -28,8 +28,13 @@ class FruitAndFaultsTest {
       Options:
         --help             Show this help
         --version          Show the CLI version
+        --no-color         Disable interactive terminal colors
+        --verbose          Show bounded sanitized diagnostics
+        --answer <id>      Select a stable reflection option for next
+        --yes              Confirm changes for start or next
 
-      Course commands are not yet available in this build.
+      Without an interactive terminal, start requires --yes;
+      next requires --answer <id> and --yes.
       """;
 
   @Test
@@ -78,17 +83,12 @@ class FruitAndFaultsTest {
 
   @ParameterizedTest
   @ValueSource(strings = {"start", "status", "check", "hint", "next", "list"})
-  void unimplementedCommandsReturnInternalError(String command) {
+  void courseCommandsRequireTheirWorkspaceOrExplicitInvocation(String command) {
     Invocation invocation = run(command);
 
-    assertEquals(10, invocation.exitCode());
+    assertEquals(2, invocation.exitCode());
     assertEquals("", invocation.stdout());
-    assertEquals(
-        "Expected an available course command; observed '"
-            + command
-            + "' is not yet implemented in this build. "
-            + "Run fruit-and-faults --help for available commands.\n",
-        invocation.stderr());
+    assertFalse(invocation.stderr().isBlank());
     assertNoStackTrace(invocation);
   }
 

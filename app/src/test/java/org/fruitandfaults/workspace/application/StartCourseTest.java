@@ -25,6 +25,7 @@ import org.fruitandfaults.progress.application.ProgressRepository;
 import org.fruitandfaults.progress.domain.CourseProgress;
 import org.fruitandfaults.progress.infra.AtomicProgressRepository;
 import org.fruitandfaults.progress.infra.JacksonProgressCodec;
+import org.fruitandfaults.validation.domain.FailureCategory;
 import org.fruitandfaults.workspace.domain.DisclosurePlan;
 import org.fruitandfaults.workspace.domain.ManagedFile;
 import org.fruitandfaults.workspace.domain.ManagedFiles;
@@ -411,6 +412,32 @@ class StartCourseTest {
     assertTrue(progress.load(target).isPresent());
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = {"interrupted-io", "closed-by-interrupt"})
+  void cancelledDisclosureRetainsJournalAndRestoresCancellation(String kind) throws IOException {
+    IOException interrupted =
+        kind.equals("interrupted-io")
+            ? new java.io.InterruptedIOException("PRIVATE")
+            : new java.nio.channels.ClosedByInterruptException();
+    try {
+      var failure =
+          assertInstanceOf(
+              StartResult.Failed.class,
+              start(catalog, new FailingFiles(files, interrupted), new ProcessGitRepository())
+                  .execute(new StartRequest(target, true)));
+      assertEquals(FailureCategory.INTERRUPTED, failure.category());
+      assertTrue(Thread.currentThread().isInterrupted());
+      Thread.interrupted();
+      assertTrue(progress.load(target).isEmpty());
+      assertTrue(journals.load(target).isPresent());
+      assertTrue(Files.exists(target.resolve("src/Raw.txt")));
+      assertFalse(Files.exists(target.resolve("src/Template.txt")));
+      assertFalse(failure.diagnostic().contains("PRIVATE"));
+    } finally {
+      Thread.interrupted();
+    }
+  }
+
   @Test
   void rejectsSymlinkDestinationAndAncestorWithoutTouchingOutsideDirectory() throws IOException {
     Path outside = Files.createDirectory(temporary.toRealPath().resolve("outside"));
@@ -496,10 +523,16 @@ class StartCourseTest {
     }
 
     private final WorkspaceFiles delegate;
+    private final IOException failure;
     private int created;
 
     private FailingFiles(WorkspaceFiles delegate) {
+      this(delegate, new IOException("Injected asset interruption"));
+    }
+
+    private FailingFiles(WorkspaceFiles delegate, IOException failure) {
       this.delegate = delegate;
+      this.failure = failure;
     }
 
     @Override
@@ -516,7 +549,7 @@ class StartCourseTest {
     @Override
     public void writeNewSafely(Path root, WorkspacePath path, byte[] bytes) throws IOException {
       if (created++ == 1) {
-        throw new IOException("Injected asset interruption");
+        throw failure;
       }
       delegate.writeNewSafely(root, path, bytes);
     }

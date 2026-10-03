@@ -15,6 +15,7 @@ import org.fruitandfaults.git.application.GitInitializationException;
 import org.fruitandfaults.git.application.GitRepository;
 import org.fruitandfaults.progress.application.ProgressRepository;
 import org.fruitandfaults.progress.domain.CourseProgress;
+import org.fruitandfaults.validation.domain.FailureCategory;
 import org.fruitandfaults.workspace.domain.DisclosurePlan;
 import org.fruitandfaults.workspace.domain.ManagedFiles;
 import org.fruitandfaults.workspace.domain.WorkspaceMetadata;
@@ -86,6 +87,8 @@ public final class StartCourse {
         }
         try {
           git.requireInitialized(root);
+        } catch (GitInitializationException unavailable) {
+          return failure(root, StartResult.Stage.GIT_INSPECTION, unavailable);
         } catch (IOException invalidGit) {
           return invalidRepository(root);
         }
@@ -198,6 +201,8 @@ public final class StartCourse {
       }
       try {
         git.requireInitialized(root);
+      } catch (GitInitializationException unavailable) {
+        return failure(root, StartResult.Stage.GIT_INSPECTION, unavailable);
       } catch (IOException invalidGit) {
         return invalidRepository(root);
       }
@@ -287,18 +292,42 @@ public final class StartCourse {
               "Directory creation failed; any created directories remain. Inspect the destination before retrying.";
           case GIT_INITIALIZATION ->
               "Git initialization failed before course state was written; the destination and any Git files remain. Check Git and choose an empty destination.";
+          case GIT_INSPECTION ->
+              "Local Git inspection failed; existing course state remains unchanged. Inspect the local repository and retry start.";
           case METADATA_CREATION ->
               "Workspace identity creation failed after Git init; retain the directory and inspect workspace.properties before retrying.";
           case DISCLOSURE ->
               "Lesson disclosure failed after Git init; progress was committed only if disclosure completed. Retain the files and use start to inspect or recover the pending transaction.";
         };
-    if (failed instanceof GitInitializationException gitFailure) {
+    if (failed instanceof GitInitializationException gitFailure
+        && stage != StartResult.Stage.GIT_INSPECTION) {
       diagnostic += " " + Objects.requireNonNull(gitFailure.getMessage());
     } else if (stage == StartResult.Stage.DISCLOSURE
         && failed instanceof IllegalArgumentException) {
       diagnostic +=
           " Installed course content is invalid or unavailable; restore the original course installation before retrying.";
     }
-    return new StartResult.Failed(root, stage, diagnostic);
+    boolean interrupted =
+        failed instanceof java.io.InterruptedIOException
+            || failed instanceof java.nio.channels.ClosedByInterruptException
+            || Thread.currentThread().isInterrupted();
+    if (interrupted) Thread.currentThread().interrupt();
+    FailureCategory category =
+        interrupted
+            ? FailureCategory.INTERRUPTED
+            : failed instanceof GitInitializationException gitFailure
+                ? switch (gitFailure.reason()) {
+                  case TIMEOUT -> FailureCategory.TIMEOUT;
+                  case INTERRUPTED -> FailureCategory.INTERRUPTED;
+                  case UNAVAILABLE -> FailureCategory.INTERNAL_ERROR;
+                  case EXIT_FAILURE ->
+                      stage == StartResult.Stage.GIT_INSPECTION
+                          ? FailureCategory.WORKSPACE_CONFLICT
+                          : FailureCategory.INTERNAL_ERROR;
+                }
+                : failed instanceof IllegalArgumentException
+                    ? FailureCategory.INTERNAL_ERROR
+                    : FailureCategory.WORKSPACE_CONFLICT;
+    return new StartResult.Failed(root, stage, diagnostic, category);
   }
 }

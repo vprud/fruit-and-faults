@@ -1,8 +1,8 @@
 # Lesson checks
 
 `CheckLesson` checks the workspace without saving progress, hints, reflection
-answers, or lesson completion. CLI composition and presentation are wired in a
-later task.
+answers, or lesson completion. The [CLI contract](cli-contract.md) defines
+composition, presentation, and stable exit codes.
 
 Checks run in this order:
 
