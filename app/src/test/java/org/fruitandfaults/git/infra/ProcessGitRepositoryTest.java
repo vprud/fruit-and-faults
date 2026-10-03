@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -188,6 +189,40 @@ class ProcessGitRepositoryTest {
             });
     git.requireInitialized(root);
     assertTrue(process.closed);
+  }
+
+  @Test
+  void acceptsEquivalentCasingAliasWhenFilesystemSupportsIt() throws IOException {
+    root = Files.createDirectory(temporary.toRealPath().resolve("CaseWorkspace with spaces"));
+    Path alias = root.resolveSibling("caseworkspace with spaces");
+    assumeTrue(
+        Files.isDirectory(alias) && Files.isSameFile(root, alias),
+        "This filesystem does not support equivalent casing aliases.");
+    ProcessGitRepository git = new ProcessGitRepository();
+    git.initialize(root);
+    git.requireInitialized(alias);
+    assertTrue(Files.isSameFile(root.resolve(".git"), alias.resolve(".git")));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"config", "config.worktree"})
+  void rejectsUtf8BomConfigurationBeforeLaunchingGit(String configuration) throws IOException {
+    new ProcessGitRepository().initialize(root);
+    Path outside = temporary.toRealPath().resolve("outside-config");
+    Files.writeString(outside, "[core]\n\tbare = false\n");
+    Path target = root.resolve(".git").resolve(configuration);
+    String content = "\ufeff[include]\n\tpath = \"" + outside + "\"\n";
+    Files.writeString(target, content);
+    ProcessGitRepository git =
+        new ProcessGitRepository(
+            Duration.ofSeconds(1),
+            4096,
+            command -> {
+              throw new AssertionError("BOM configuration reached Git process launch");
+            });
+    assertThrows(IOException.class, () -> git.requireInitialized(root));
+    assertEquals(content, Files.readString(target));
+    assertEquals("[core]\n\tbare = false\n", Files.readString(outside));
   }
 
   private static final class FakeProcess extends Process {

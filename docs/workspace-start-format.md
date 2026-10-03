@@ -10,7 +10,9 @@ markers safely.
 Workspace identity alone does not authorize resume or recovery. Before either
 operation, start requires a real non-bare Git repository whose Git directory is
 exactly the selected workspace's `.git` and whose worktree root is exactly the
-workspace. A missing `.git`, Git pointer file, symlink, empty or invalid
+workspace. Parsed Git paths are compared against safely canonicalized filesystem
+identities, so equivalent casing aliases on supporting filesystems are accepted.
+A missing `.git`, Git pointer file, symlink, empty or invalid
 repository, redirected worktree, or external common/object storage is rejected
 without disclosing files or updating progress. Start never runs `git init` to
 repair a workspace that already carries a marker.
@@ -18,7 +20,9 @@ repair a workspace that already carries a marker.
 Repository validation is read-only and uses the same process deadline/output
 cap as initialization. Its filesystem inspection does not follow symlinks and
 is limited to 10,000 entries and 32 directory levels. Local Git configuration
-is limited to 64 KiB per file and cannot include external configuration files.
+is limited to 64 KiB per file, cannot include external configuration files, and
+must not begin with a UTF-8 BOM. This policy applies to both `config` and
+`config.worktree` before any Git process is launched.
 Repository redirection through `.git/commondir` or object alternates is rejected.
 These limits preserve a self-contained learner repository; incompatible state
 must be inspected explicitly rather than silently repaired. Confirmed recovery
