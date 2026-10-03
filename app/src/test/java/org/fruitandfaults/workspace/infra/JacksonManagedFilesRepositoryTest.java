@@ -337,7 +337,7 @@ class JacksonManagedFilesRepositoryTest {
   }
 
   @Test
-  void failedInitialManifestWriteRemovesOnlyOwnedTarget() throws IOException {
+  void failedInitialManifestWriteRetainsAmbiguousTargetForRecovery() throws IOException {
     AtomicInteger writes = new AtomicInteger();
     JacksonManagedFilesRepository partial =
         new JacksonManagedFilesRepository(
@@ -352,8 +352,50 @@ class JacksonManagedFilesRepositoryTest {
               throw new AssertionError("Initialization cannot use replacing move");
             });
     assertThrows(WorkspaceWriteException.class, () -> partial.save(root, ManagedFiles.empty()));
-    assertTrue(Files.notExists(stateFile()));
-    assertEquals(List.of(), children(stateDirectory()));
+    assertEquals("partial", Files.readString(stateFile()));
+    assertEquals(List.of(stateFile()), children(stateDirectory()));
+    assertThrows(ManagedFilesReadException.class, () -> repository.load(root));
+    assertThrows(
+        ManagedFilesReadException.class, () -> repository.save(root, ManagedFiles.empty()));
+    assertEquals("partial", Files.readString(stateFile()));
+  }
+
+  @Test
+  void failedInitializationPreservesReplacementMadeInsideCreator() throws IOException {
+    AtomicInteger writes = new AtomicInteger();
+    byte[] foreign = "foreign manifest replacement".getBytes(StandardCharsets.UTF_8);
+    Path relocated = root.resolve("relocated-initial-manifest");
+    JacksonManagedFilesRepository replaced =
+        new JacksonManagedFilesRepository(
+            (channel, bytes) -> {
+              if (writes.getAndIncrement() == 1) {
+                channel.write(ByteBuffer.wrap("partial".getBytes(StandardCharsets.UTF_8)));
+                throw new IOException("injected initial target write failure");
+              }
+              SafeWorkspaceFiles.writeFlushed(channel, bytes);
+            },
+            (directory, temporary, target) -> {
+              throw new AssertionError("Initialization cannot use replacing move");
+            },
+            BasicFileAttributes::fileKey,
+            (directory, target) -> {
+              var channel = SafeWorkspaceFiles.createNewChannel(directory, target);
+              try {
+                Files.move(stateFile(), relocated);
+                Files.write(stateFile(), foreign);
+                return channel;
+              } catch (IOException | RuntimeException failed) {
+                channel.close();
+                throw failed;
+              }
+            });
+    assertAll(
+        () ->
+            assertThrows(
+                WorkspaceWriteException.class, () -> replaced.save(root, ManagedFiles.empty())),
+        () -> assertArrayEquals(foreign, Files.readAllBytes(stateFile())),
+        () -> assertEquals("partial", Files.readString(relocated)),
+        () -> assertEquals(List.of(stateFile()), children(stateDirectory())));
   }
 
   @Test

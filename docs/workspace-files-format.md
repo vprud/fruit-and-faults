@@ -55,9 +55,12 @@ Tool-owned manifest writes create and flush a same-directory temporary file
 through the verified secure handle. For an absent manifest, initialization
 reserves its name with directory-relative `CREATE_NEW`, then writes and flushes
 the reserved channel. A manifest appearing after validation is preserved byte
-for byte. Initial bytes become visible during writing; an ordinary failure
-cleans up only the identified created entry, while a crash may leave a partial
-document that is rejected and preserved for recovery. Existing validated state
+for byte. Initial bytes become visible during writing. On initialization failure,
+the target is retained: public Java APIs cannot prove that its directory-entry
+identity still belongs to the opened channel after concurrent replacement.
+Partial or ambiguous entries are preserved for explicit recovery, never
+automatically deleted or overwritten. Invalid partial documents are rejected
+on load or retry. Existing validated state
 is replaced by an atomic move through that same handle. Unsupported atomic
 replacement fails while preserving the previous manifest. There is no pathname
 move or destructive replacement fallback.

@@ -40,9 +40,9 @@ import org.jspecify.annotations.Nullable;
  * Strict version-one ownership JSON in .fruit-and-faults/managed-files.json. Existing malformed or
  * future documents are preserved. Same-directory temporary creation, writes, exclusive initial
  * creation, and atomic replacement use a verified secure directory handle. Initialization writes
- * directly to a reserved entry; a crash may leave an invalid partial document that is preserved.
- * Unsupported atomic replacement fails without a destructive fallback. Cleanup verifies the
- * original entry identity through the same handle.
+ * directly to a reserved entry; failures retain partial or ambiguous initial state for recovery.
+ * Unsupported atomic replacement fails without a destructive fallback. Temporary cleanup verifies
+ * the original entry identity through the same handle.
  */
 public final class JacksonManagedFilesRepository implements ManagedFilesRepository {
   static final int MAX_DOCUMENT_BYTES = 1_048_576;
@@ -151,22 +151,19 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
       byte[] bytes,
       List<SafeWorkspaceFiles.DirectoryIdentity> directories)
       throws IOException {
-    @Nullable Object key = null;
-    try {
-      try (SeekableByteChannel channel = creator.create(directory, target)) {
-        key =
-            SafeWorkspaceFiles.requireStableKey(
-                SafeWorkspaceFiles.attributes(directory, target), identityReader);
-        FileChannel fileChannel = SafeWorkspaceFiles.requireFlushable(channel);
-        writer.write(fileChannel, bytes);
-        fileChannel.force(true);
-      }
-      SafeWorkspaceFiles.verifyDirectories(directories);
-      SafeWorkspaceFiles.requireEntryIdentity(directory, target, key);
-    } catch (IOException | RuntimeException failed) {
-      SafeWorkspaceFiles.cleanupOwnedTemporary(directory, target, key);
-      throw failed;
+    // A directory entry key cannot prove identity of the opened channel after a concurrent swap.
+    // Never delete this name on failure: retain partial or foreign state for explicit recovery.
+    Object key;
+    try (SeekableByteChannel channel = creator.create(directory, target)) {
+      key =
+          SafeWorkspaceFiles.requireStableKey(
+              SafeWorkspaceFiles.attributes(directory, target), identityReader);
+      FileChannel fileChannel = SafeWorkspaceFiles.requireFlushable(channel);
+      writer.write(fileChannel, bytes);
+      fileChannel.force(true);
     }
+    SafeWorkspaceFiles.verifyDirectories(directories);
+    SafeWorkspaceFiles.requireEntryIdentity(directory, target, key);
   }
 
   private void verifyBeforeReplacement(
