@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.fruitandfaults.course.domain.Course;
 import org.fruitandfaults.course.domain.Lesson;
@@ -117,6 +118,81 @@ class DiscloseLessonTest {
     assertEquals(TransitionStatus.CONFLICT, result.status());
     assertEquals(List.of(), stores.events);
     assertTrue(stores.journal.isPresent());
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"revision", "ownership"})
+  void exactRecoveryRejectsReplacedJournalBeforeMutation(String changed) throws IOException {
+    Stores stores = pending();
+    TransitionJournal expected = stores.journal.orElseThrow();
+    TransitionJournal replacement = replacement(expected, changed);
+    stores.journal = Optional.of(replacement);
+
+    DisclosureResult.Conflict result =
+        assertInstanceOf(DisclosureResult.Conflict.class, useCase(stores).recover(ROOT, expected));
+
+    assertEquals(DisclosureResult.Reason.PLAN_MISMATCH, result.reason());
+    assertEquals(List.of(), stores.events);
+    assertEquals(Optional.of(previous), stores.progress);
+    assertEquals(Optional.empty(), stores.managed);
+    assertEquals(Optional.of(replacement), stores.journal);
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "before-assets",
+        "between-assets",
+        "before-manifest",
+        "before-progress",
+        "before-remove"
+      })
+  void exactRecoveryRechecksJournalBeforeEveryMutation(String boundary) throws IOException {
+    Stores stores = pending();
+    TransitionJournal expected = stores.journal.orElseThrow();
+    TransitionJournal replacement = replacement(expected, "revision");
+    int replacementPreflight =
+        switch (boundary) {
+          case "before-assets" -> 1;
+          case "before-manifest" -> 2;
+          case "before-progress" -> 3;
+          case "before-remove" -> 4;
+          default -> 0;
+        };
+    AtomicInteger preflights = new AtomicInteger();
+    stores.afterPreflight =
+        () -> {
+          if (preflights.incrementAndGet() == replacementPreflight)
+            stores.journal = Optional.of(replacement);
+        };
+    if (boundary.equals("between-assets")) {
+      stores.afterAssetWrite = () -> stores.journal = Optional.of(replacement);
+    }
+
+    DisclosureResult.Conflict result =
+        assertInstanceOf(DisclosureResult.Conflict.class, useCase(stores).recover(ROOT, expected));
+
+    assertEquals(DisclosureResult.Reason.PLAN_MISMATCH, result.reason());
+    List<String> events =
+        List.of(
+            "asset:src/Raw.txt",
+            "asset:src/Template.txt",
+            "asset:src/Scaffold.txt",
+            "manifest",
+            "progress");
+    int completedWrites =
+        switch (boundary) {
+          case "before-assets" -> 0;
+          case "between-assets" -> 1;
+          case "before-manifest" -> 3;
+          case "before-progress" -> 4;
+          case "before-remove" -> 5;
+          default -> throw new AssertionError(boundary);
+        };
+    assertEquals(events.subList(0, completedWrites), stores.events);
+    assertEquals(
+        Optional.of(boundary.equals("before-remove") ? intended : previous), stores.progress);
+    assertEquals(Optional.of(replacement), stores.journal);
   }
 
   @Test
@@ -226,6 +302,34 @@ class DiscloseLessonTest {
         catalog, stores, stores.manifests, stores.progresses, stores.journals);
   }
 
+  private Stores pending() {
+    Stores stores = new Stores();
+    stores.failure = "asset:src/Raw.txt";
+    assertThrows(
+        IOException.class,
+        () ->
+            useCase(stores).apply(ROOT, lesson, Optional.empty(), Optional.of(previous), intended));
+    stores.failure = "";
+    stores.events.clear();
+    return stores;
+  }
+
+  private TransitionJournal replacement(TransitionJournal expected, String changed) {
+    return new TransitionJournal(
+        expected.formatVersion(),
+        expected.fromLessonId(),
+        expected.toLessonId(),
+        expected.assets(),
+        expected.expectedManifestVersion(),
+        changed.equals("ownership")
+            ? Optional.of(ManagedFiles.empty())
+            : expected.expectedManaged(),
+        expected.expectedProgress(),
+        changed.equals("revision")
+            ? previous.advance(previous.activeLessonId().orElseThrow(), "yes", "other").progress()
+            : expected.intendedProgress());
+  }
+
   private Course course() {
     Course base = catalog.load();
     Lesson second = base.lessons().getLast();
@@ -260,6 +364,8 @@ class DiscloseLessonTest {
     private String failure = "";
     private boolean editDuringManifest;
     private boolean changeProgressDuringManifest;
+    private Runnable afterPreflight = () -> {};
+    private Runnable afterAssetWrite = () -> {};
     private final ManagedFilesRepository manifests =
         new ManagedFilesRepository() {
           @Override
@@ -336,13 +442,16 @@ class DiscloseLessonTest {
     public DisclosurePlan preflight(Path root, List<ManagedFile> requested, ManagedFiles known) {
       Map<WorkspacePath, DisclosurePlan.Observation> facts = new LinkedHashMap<>();
       requested.forEach(file -> facts.put(file.path(), inspect(root, file.path())));
-      return DisclosurePlan.evaluate(requested, known, facts);
+      DisclosurePlan plan = DisclosurePlan.evaluate(requested, known, facts);
+      afterPreflight.run();
+      return plan;
     }
 
     @Override
     public void writeNewSafely(Path root, WorkspacePath path, byte[] bytes) throws IOException {
       event("asset:" + path.value());
       observations.put(path, new DisclosurePlan.RegularFile(lesson.assets().getFirst().sha256()));
+      afterAssetWrite.run();
     }
 
     @Override
