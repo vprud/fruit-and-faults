@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class GradleCheckClassifierTest {
   private final GradleCheckClassifier classifier = new GradleCheckClassifier();
@@ -125,14 +126,51 @@ class GradleCheckClassifierTest {
             CheckOutcome.Failed.class,
             classifier.classify(new ProcessResult.Exited(1, output(captured, ""))));
     assertEquals(FailureCategory.COMPILATION_ERROR, outcome.category());
-    assertTrue(
-        outcome
-            .diagnostics()
-            .getFirst()
-            .observed()
-            .contains("Starter.java:7: error: cannot find symbol"));
+    assertEquals(
+        "Java compilation failed at Starter.java:7.", outcome.diagnostics().getFirst().observed());
     assertFalse(outcome.diagnostics().toString().contains("\u001b"));
     assertFalse(outcome.diagnostics().toString().contains("\u0007"));
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "SECRET_TOKEN=fake",
+        "see /Users/vlad/private/file and C:\\private\\token",
+        "unexpected \u202ESECRET_TOKEN=fake\u2066"
+      })
+  void compilerObservationContainsOnlyRelativeLocationAndGenericFailure(String suffix) {
+    String captured =
+        "> Task :compileJava FAILED\n/workspace/private/Starter.java:7: error: " + suffix + "\n";
+    CheckOutcome.Failed outcome =
+        assertInstanceOf(
+            CheckOutcome.Failed.class,
+            classifier.classify(new ProcessResult.Exited(1, output(captured, ""))));
+    assertEquals(FailureCategory.COMPILATION_ERROR, outcome.category());
+    assertEquals(
+        "Java compilation failed at Starter.java:7.", outcome.diagnostics().getFirst().observed());
+    assertFalse(outcome.diagnostics().toString().contains("SECRET_TOKEN"));
+    assertFalse(outcome.diagnostics().toString().contains("/Users/vlad"));
+    assertFalse(outcome.diagnostics().toString().contains("C:\\private"));
+    assertFalse(outcome.diagnostics().toString().contains("\u202E"));
+    assertFalse(outcome.diagnostics().toString().contains("\u2066"));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"\u202E", "\u2066", "\u200B"})
+  void removesUnicodeFormatControlsBeforeRecognizingRelativeSourceLocation(String control) {
+    String captured =
+        "> Task :compileJava FAILED\n/workspace/Sta"
+            + control
+            + "rter.java:7: error: ordinary compilation detail\n";
+    CheckOutcome.Failed outcome =
+        assertInstanceOf(
+            CheckOutcome.Failed.class,
+            classifier.classify(new ProcessResult.Exited(1, output(captured, ""))));
+    assertEquals(FailureCategory.COMPILATION_ERROR, outcome.category());
+    assertEquals(
+        "Java compilation failed at Starter.java:7.", outcome.diagnostics().getFirst().observed());
+    assertFalse(outcome.diagnostics().toString().contains(control));
   }
 
   @Test

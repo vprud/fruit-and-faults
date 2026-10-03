@@ -1,5 +1,7 @@
 package org.fruitandfaults.validation.infra;
 
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -20,31 +22,28 @@ public final class ProcessFixture {
   public static void main(String[] args) throws Exception {
     switch (args[0]) {
       case "echo" -> {
-        System.out.println(Path.of("").toAbsolutePath());
-        System.out.println(args[1]);
-        System.err.println("stderr message");
+        write(System.out, Path.of("").toAbsolutePath() + "\n" + args[1] + "\n");
+        write(System.err, "stderr message\n");
       }
       case "failure" -> {
-        System.out.println("useful stdout");
-        System.err.println("useful stderr");
+        write(System.out, "useful stdout\n");
+        write(System.err, "useful stderr\n");
         System.exit(23);
       }
       case "flood" -> {
         Thread error =
             new Thread(
                 () -> {
-                  System.err.print("e".repeat(2_000_000));
-                  System.err.println("stderr useful tail");
+                  write(System.err, "e".repeat(2_000_000) + "stderr useful tail\n");
                 });
         error.start();
-        System.out.print("o".repeat(2_000_000));
-        System.out.println("stdout useful tail");
+        write(System.out, "o".repeat(2_000_000) + "stdout useful tail\n");
         error.join(TimeUnit.SECONDS.toMillis(10));
         if (error.isAlive()) {
           throw new IllegalStateException("Error stream was not drained");
         }
       }
-      case "unicode" -> System.out.println("я".repeat(20));
+      case "unicode" -> write(System.out, "я".repeat(20) + "\n");
       case "hold" -> new CountDownLatch(1).await(1, TimeUnit.MINUTES);
       case "child" -> {
         Process child =
@@ -64,5 +63,11 @@ public final class ProcessFixture {
       }
       default -> throw new IllegalArgumentException("Unknown fixture");
     }
+  }
+
+  private static void write(PrintStream stream, String text) {
+    byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+    stream.write(bytes, 0, bytes.length);
+    stream.flush();
   }
 }
