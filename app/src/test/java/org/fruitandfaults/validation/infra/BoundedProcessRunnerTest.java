@@ -42,6 +42,18 @@ class BoundedProcessRunnerTest {
   }
 
   @Test
+  void trustedLaunchConfigurationReachesBoundedOwnedProcess() {
+    ProcessResult.Exited result =
+        assertInstanceOf(
+            ProcessResult.Exited.class,
+            new BoundedProcessRunner(
+                    builder -> builder.environment().put("FAF_TEST_OPTION", "configured"))
+                .run(request("environment")));
+    assertEquals(0, result.exitCode());
+    assertEquals("configured", result.output().stdout());
+  }
+
+  @Test
   void preservesArgumentsAndWorkingDirectoryWithoutShellExpansion() {
     ProcessResult.Exited result =
         assertInstanceOf(

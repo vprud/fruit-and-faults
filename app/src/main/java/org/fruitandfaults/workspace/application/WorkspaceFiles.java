@@ -14,6 +14,28 @@ import org.fruitandfaults.workspace.domain.WorkspacePath;
 /** The filesystem boundary for learner-owned destinations; no operation overwrites them. */
 public interface WorkspaceFiles {
   /**
+   * Observes anchored metadata only, without opening file content or calculating fingerprints.
+   *
+   * @param root selected real learner workspace
+   * @param path normalized relative artifact
+   * @return regular-file presence, absence, or an unsafe entry
+   * @throws IOException if metadata access is unsupported or changes concurrently
+   */
+  default Presence presence(Path root, WorkspacePath path) throws IOException {
+    throw new IOException("Cheap artifact metadata inspection is unavailable.");
+  }
+
+  /** Cheap observations that do not establish compilation, test integrity, or behavior. */
+  enum Presence {
+    /** A regular file exists; its contents have not been validated. */
+    PRESENT,
+    /** The artifact or a parent is absent. */
+    MISSING,
+    /** A symlink, special file, or inappropriate directory prevents safe access. */
+    UNSAFE
+  }
+
+  /**
    * Reads at most 16 MiB from one regular file through verified directory handles. Callers must put
    * untrusted file opens and reads in an owned deadline-bound process: a byte budget alone cannot
    * bound an operating-system special-file replacement race.
