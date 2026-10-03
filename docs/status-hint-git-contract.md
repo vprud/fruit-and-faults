@@ -19,7 +19,9 @@ configuration. Nested repositories and submodules are intentionally unsupported
 in the Phase A workspace and produce a workspace diagnostic before Git runs.
 Case-ambiguous Git metadata is rejected on filesystems where it aliases the
 reserved names. Both local configuration files are read through an anchored
-`.git` directory handle under a 64 KiB limit before any Git process starts. A
+`.git` directory handle under a 64 KiB limit in a deadline-owned Java worker
+before any Git process starts. Worker timeout, interruption, invalid protocol,
+or incomplete cleanup fails status without exposing configuration bytes. A
 conservative scanner rejects filters, includes, external attribute files,
 worktree configuration, continuations, and ambiguous bytes without opening any
 referenced path. Two independent anchored reads must retain the same entry

@@ -381,35 +381,28 @@ class ProcessGitRepositoryTest {
     assumeTrue(originalKey != null, "This filesystem does not expose stable file keys.");
     Path retained = root.resolve(".git").resolve(name + ".retained");
     AtomicInteger targetReads = new AtomicInteger();
-    ProcessGitRepository guarded =
-        new ProcessGitRepository(
-            Duration.ofSeconds(1),
-            4096,
-            command -> {
-              throw new AssertionError("Configuration swap reached initialization Git");
-            },
-            request -> {
-              throw new AssertionError("Configuration swap reached read-only Git");
-            },
-            (observedName, attributes) -> {
-              if (!observedName.toString().equals(name)) {
-                return attributes.fileKey();
-              }
-              int read = targetReads.incrementAndGet();
-              if (read == 1) {
-                Files.move(target, retained);
-                Files.writeString(target, benignReplacement);
-                return originalKey;
-              }
-              if (read == 2) {
-                Files.delete(target);
-                Files.move(retained, target);
-                return originalKey;
-              }
-              return attributes.fileKey();
-            });
+    ProcessGitRepository.ConfigIdentityReader identityReader =
+        (observedName, attributes) -> {
+          if (!observedName.toString().equals(name)) {
+            return attributes.fileKey();
+          }
+          int read = targetReads.incrementAndGet();
+          if (read == 1) {
+            Files.move(target, retained);
+            Files.writeString(target, benignReplacement);
+            return originalKey;
+          }
+          if (read == 2) {
+            Files.delete(target);
+            Files.move(retained, target);
+            return originalKey;
+          }
+          return attributes.fileKey();
+        };
 
-    assertThrows(IOException.class, () -> guarded.requireInitialized(root));
+    assertThrows(
+        IOException.class,
+        () -> ProcessGitRepository.inspectLocalConfigurations(root, identityReader));
     assertEquals(unsafe, Files.readString(target));
     assertFalse(Files.exists(retained));
     assertEquals(4, targetReads.get());
@@ -431,6 +424,82 @@ class ProcessGitRepositoryTest {
 
     assertConfigurationRejectedBeforeGit();
     assertTrue(Files.exists(target, java.nio.file.LinkOption.NOFOLLOW_LINKS));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"config", "config.worktree"})
+  void configWorkerTimeoutOwnsRegularToFifoRaceWithoutLaunchingGit(String name) throws Exception {
+    assumeFalse(System.getProperty("os.name").startsWith("Windows"), "mkfifo fixture is Unix-only");
+    new ProcessGitRepository().initialize(root);
+    Path target = root.resolve(".git").resolve(name);
+    Files.writeString(target, "[filter \"unsafe\"] clean=x\n");
+    Path retained = target.resolveSibling(name + ".retained");
+    Path ready = root.resolve("config-worker.pid");
+    BoundedProcessRunner workerRunner =
+        new BoundedProcessRunner(
+            builder -> builder.command(configFifoFixtureCommand(target, retained, ready)));
+    ProcessGitRepository guarded =
+        new ProcessGitRepository(
+            Duration.ofSeconds(1),
+            4096,
+            command -> {
+              throw new AssertionError("Config race reached initialization Git");
+            },
+            request -> {
+              throw new AssertionError("Config race reached status Git");
+            },
+            workerRunner);
+
+    GitInitializationException failed =
+        assertThrows(GitInitializationException.class, () -> guarded.requireInitialized(root));
+
+    assertEquals(GitInitializationException.Reason.TIMEOUT, failed.reason());
+    long workerPid = Long.parseLong(Files.readString(ready));
+    assertFalse(ProcessHandle.of(workerPid).map(ProcessHandle::isAlive).orElse(false));
+    assertTrue(
+        Thread.getAllStackTraces().keySet().stream()
+            .noneMatch(thread -> thread.isAlive() && thread.getName().equals("faf-process-drain")));
+    Files.delete(target);
+    Files.move(retained, target);
+    assertEquals("[filter \"unsafe\"] clean=x\n", Files.readString(target));
+  }
+
+  @Test
+  void interruptedConfigWorkerRestoresInterruptAndPreventsGitLaunch() throws IOException {
+    new ProcessGitRepository().initialize(root);
+    ProcessGitRepository guarded =
+        new ProcessGitRepository(
+            Duration.ofSeconds(1),
+            4096,
+            command -> {
+              throw new AssertionError("Interrupted config inspection reached initialization Git");
+            },
+            request -> {
+              throw new AssertionError("Interrupted config inspection reached status Git");
+            },
+            request ->
+                new org.fruitandfaults.validation.application.ProcessResult.Interrupted(
+                    org.fruitandfaults.validation.application.ProcessResult.Output.empty(),
+                    org.fruitandfaults.validation.application.ProcessResult.Cleanup.COMPLETE));
+    try {
+      GitInitializationException failed =
+          assertThrows(GitInitializationException.class, () -> guarded.requireInitialized(root));
+      assertEquals(GitInitializationException.Reason.INTERRUPTED, failed.reason());
+      assertTrue(Thread.currentThread().isInterrupted());
+    } finally {
+      Thread.interrupted();
+    }
+  }
+
+  private static List<String> configFifoFixtureCommand(Path target, Path retained, Path ready) {
+    return List.of(
+        Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+        "-cp",
+        System.getProperty("java.class.path"),
+        GitConfigRaceWorker.class.getName(),
+        target.getFileName().toString(),
+        retained.toString(),
+        ready.toString());
   }
 
   private void assertConfigurationRejectedBeforeGit() {

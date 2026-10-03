@@ -3,6 +3,7 @@ package org.fruitandfaults.git.infra;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
@@ -48,7 +49,7 @@ public final class ProcessGitRepository implements GitRepository {
   private final int outputLimit;
   private final ProcessLauncher launcher;
   private final ProcessRunner statusRunner;
-  private final ConfigIdentityReader configIdentityReader;
+  private final ProcessRunner configRunner;
 
   /** Uses a ten-second deadline, 64 KiB output cap, and the installed local Git executable. */
   public ProcessGitRepository() {
@@ -65,7 +66,7 @@ public final class ProcessGitRepository implements GitRepository {
 
   ProcessGitRepository(
       Duration timeout, int outputLimit, ProcessLauncher launcher, ProcessRunner statusRunner) {
-    this(timeout, outputLimit, launcher, statusRunner, (name, attributes) -> attributes.fileKey());
+    this(timeout, outputLimit, launcher, statusRunner, new BoundedProcessRunner());
   }
 
   ProcessGitRepository(
@@ -73,7 +74,7 @@ public final class ProcessGitRepository implements GitRepository {
       int outputLimit,
       ProcessLauncher launcher,
       ProcessRunner statusRunner,
-      ConfigIdentityReader configIdentityReader) {
+      ProcessRunner configRunner) {
     if (timeout.isZero()
         || timeout.isNegative()
         || timeout.compareTo(Duration.ofMinutes(1)) > 0
@@ -86,7 +87,7 @@ public final class ProcessGitRepository implements GitRepository {
     this.outputLimit = outputLimit;
     this.launcher = Objects.requireNonNull(launcher);
     this.statusRunner = Objects.requireNonNull(statusRunner);
-    this.configIdentityReader = Objects.requireNonNull(configIdentityReader);
+    this.configRunner = Objects.requireNonNull(configRunner);
   }
 
   @Override
@@ -115,7 +116,7 @@ public final class ProcessGitRepository implements GitRepository {
             "Git repository redirects storage outside its local .git tree; preserve it and restore a self-contained repository.");
       }
     }
-    requireLocalConfigurations(gitDirectory, configIdentityReader);
+    requireLocalConfigurationsInWorker(normalized);
     requireNoExecutableFilters(normalized);
     CommandOutput repository;
     try {
@@ -138,6 +139,61 @@ public final class ProcessGitRepository implements GitRepository {
     requireMatchingRepository(repository.text(), canonicalRoot, canonicalGitDirectory);
     requireSafeDirectory(gitDirectory);
     requireSafeRepositoryTree(gitDirectory);
+  }
+
+  private void requireLocalConfigurationsInWorker(Path root) throws IOException {
+    List<String> command;
+    try {
+      Path executable =
+          Path.of(
+              System.getProperty("java.home"),
+              "bin",
+              System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java");
+      Path code =
+          Path.of(
+                  Objects.requireNonNull(
+                          GitConfigWorker.class.getProtectionDomain().getCodeSource())
+                      .getLocation()
+                      .toURI())
+              .toAbsolutePath()
+              .normalize();
+      command =
+          List.of(
+              executable.toString(),
+              "-Xmx64m",
+              "-XX:MaxMetaspaceSize=64m",
+              "-cp",
+              code.toString(),
+              GitConfigWorker.class.getName());
+    } catch (URISyntaxException | RuntimeException unavailable) {
+      throw failure(GitInitializationException.Reason.UNAVAILABLE);
+    }
+    ProcessResult result = configRunner.run(new ProcessRequest(command, root, timeout, 1024));
+    if (result instanceof ProcessResult.Interrupted) {
+      Thread.currentThread().interrupt();
+      throw failure(GitInitializationException.Reason.INTERRUPTED);
+    }
+    if (result instanceof ProcessResult.TimedOut) {
+      throw failure(GitInitializationException.Reason.TIMEOUT);
+    }
+    if (result instanceof ProcessResult.Failed) {
+      throw failure(GitInitializationException.Reason.UNAVAILABLE);
+    }
+    ProcessResult.Exited exited = (ProcessResult.Exited) result;
+    if (exited.output().stdoutTruncated()
+        || exited.output().stderrTruncated()
+        || !exited.output().stdout().isBlank()
+        || !exited.output().stderr().isBlank()) {
+      throw failure(GitInitializationException.Reason.UNAVAILABLE);
+    }
+    if (exited.exitCode() == GitConfigWorker.SAFE) {
+      return;
+    }
+    if (exited.exitCode() == GitConfigWorker.WORKSPACE_CONFLICT) {
+      throw new IOException(
+          "Workspace Git configuration could not be inspected safely; preserve it and remove external or executable directives.");
+    }
+    throw failure(GitInitializationException.Reason.UNAVAILABLE);
   }
 
   @Override
@@ -477,6 +533,13 @@ public final class ProcessGitRepository implements GitRepository {
             }
           }
         });
+  }
+
+  static void inspectLocalConfigurations(Path root, ConfigIdentityReader identityReader)
+      throws IOException {
+    Path gitDirectory = root.toAbsolutePath().normalize().resolve(".git");
+    requireSafeDirectory(gitDirectory);
+    requireLocalConfigurations(gitDirectory, identityReader);
   }
 
   private static void requireLocalConfigurations(
