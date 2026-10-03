@@ -21,6 +21,8 @@ public final class ProcessFixture {
    */
   public static void main(String[] args) throws Exception {
     switch (args[0]) {
+      case "environment" ->
+          write(System.out, java.util.Objects.requireNonNull(System.getenv("FAF_TEST_OPTION")));
       case "echo" -> {
         write(System.out, Path.of("").toAbsolutePath() + "\n" + args[1] + "\n");
         write(System.err, "stderr message\n");

@@ -21,6 +21,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
 import org.fruitandfaults.validation.application.ProcessRequest;
@@ -45,6 +46,25 @@ public final class BoundedProcessRunner implements ProcessRunner {
   /** Uses the Java process API without adding a shell or modifying the caller's environment. */
   public BoundedProcessRunner() {
     this(ProcessBuilder::start, (process, nanos) -> process.waitFor(nanos, TimeUnit.NANOSECONDS));
+  }
+
+  /**
+   * Allows trusted adapters to restrict launch settings while retaining bounded tree ownership.
+   *
+   * @param configuration trusted adapter settings applied before direct process launch
+   */
+  public BoundedProcessRunner(Consumer<ProcessBuilder> configuration) {
+    this(
+        configuredLauncher(configuration),
+        (process, nanos) -> process.waitFor(nanos, TimeUnit.NANOSECONDS));
+  }
+
+  private static ProcessLauncher configuredLauncher(Consumer<ProcessBuilder> configuration) {
+    Objects.requireNonNull(configuration);
+    return builder -> {
+      configuration.accept(builder);
+      return builder.start();
+    };
   }
 
   BoundedProcessRunner(ProcessLauncher launcher, ProcessWaiter waiter) {

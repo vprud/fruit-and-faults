@@ -67,6 +67,55 @@ public final class SafeWorkspaceFiles implements WorkspaceFiles {
   }
 
   @Override
+  public Presence presence(Path root, WorkspacePath path) throws IOException {
+    Path realRoot = verifiedRoot(root);
+    String[] segments = path.value().split("/", -1);
+    if (segments.length > 256) {
+      throw new IOException("Artifact path exceeds the supported depth.");
+    }
+    List<DirectoryIdentity> identities = directoryIdentities(realRoot, realRoot);
+    try (SecureDirectoryStream<Path> directory =
+        openVerifiedDirectory(realRoot, realRoot, identities, identityReader)) {
+      Presence observed = presence(directory, segments, 0);
+      verifyDirectories(identities);
+      return observed;
+    }
+  }
+
+  private Presence presence(SecureDirectoryStream<Path> directory, String[] segments, int index)
+      throws IOException {
+    Path name = Path.of(segments[index]);
+    BasicFileAttributes observed;
+    try {
+      observed = attributes(directory, name);
+    } catch (NoSuchFileException absent) {
+      return Presence.MISSING;
+    }
+    if (observed.isSymbolicLink()) {
+      return Presence.UNSAFE;
+    }
+    if (index == segments.length - 1) {
+      return observed.isRegularFile() ? Presence.PRESENT : Presence.UNSAFE;
+    }
+    if (!observed.isDirectory()) {
+      return Presence.UNSAFE;
+    }
+    Object key = requireStableKey(observed, identityReader);
+    try (SecureDirectoryStream<Path> child =
+        directory.newDirectoryStream(name, LinkOption.NOFOLLOW_LINKS)) {
+      BasicFileAttributeView view = child.getFileAttributeView(BasicFileAttributeView.class);
+      if (view == null || !key.equals(requireStableKey(view.readAttributes(), identityReader))) {
+        throw new IOException("Artifact directory changed during metadata inspection.");
+      }
+      Presence result = presence(child, segments, index + 1);
+      if (!key.equals(requireStableKey(attributes(directory, name), identityReader))) {
+        throw new IOException("Artifact directory changed during metadata inspection.");
+      }
+      return result;
+    }
+  }
+
+  @Override
   public Optional<byte[]> read(Path root, WorkspacePath path) throws IOException {
     Path realRoot = verifiedRoot(root);
     Path target = verifiedTarget(realRoot, path);

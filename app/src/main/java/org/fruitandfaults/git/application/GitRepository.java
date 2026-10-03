@@ -21,4 +21,15 @@ public interface GitRepository {
    * @throws IOException if Git state is absent, unsafe, incompatible, or cannot be validated
    */
   void requireInitialized(Path root) throws IOException;
+
+  /**
+   * Validates the exact local repository and inspects it without mutation or network access.
+   *
+   * @param root selected real learner workspace
+   * @return complete bounded local facts without sensitive Git output
+   * @throws IOException if repository validation, supervision, or output parsing fails
+   */
+  default GitStatus status(Path root) throws IOException {
+    throw new IOException("Read-only Git inspection is unavailable; inspect the installed CLI.");
+  }
 }
