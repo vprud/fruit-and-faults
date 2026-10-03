@@ -1,12 +1,7 @@
 package org.fruitandfaults.validation.infra;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -19,27 +14,27 @@ import org.fruitandfaults.course.application.CourseAssets;
 import org.fruitandfaults.course.domain.Lesson;
 import org.fruitandfaults.course.domain.LessonAsset;
 import org.fruitandfaults.validation.application.ArtifactInspector;
+import org.fruitandfaults.validation.application.ProcessRunner;
 import org.fruitandfaults.validation.domain.CheckOutcome;
 import org.fruitandfaults.validation.domain.Diagnostic;
 import org.fruitandfaults.validation.domain.FailureCategory;
-import org.fruitandfaults.workspace.application.WorkspaceFiles;
 import org.fruitandfaults.workspace.domain.ManagedFile;
 import org.fruitandfaults.workspace.domain.ManagedFiles;
 import org.fruitandfaults.workspace.domain.WorkspacePath;
 
 /** Checks installed declarations against manifest facts and bounded anchored learner-file reads. */
 public final class ManifestArtifactInspector implements ArtifactInspector {
-  private final WorkspaceFiles files;
+  private final ProcessRunner runner;
   private final CourseAssets assets;
 
   /**
-   * Uses the existing workspace safety boundary and installed baseline bytes.
+   * Uses owned deadline-bound workers for anchored reads and installed baseline bytes.
    *
-   * @param files bounded anchored filesystem access
+   * @param runner bounded worker process owner
    * @param assets read-only installed course assets
    */
-  public ManifestArtifactInspector(WorkspaceFiles files, CourseAssets assets) {
-    this.files = Objects.requireNonNull(files);
+  public ManifestArtifactInspector(ProcessRunner runner, CourseAssets assets) {
+    this.runner = Objects.requireNonNull(runner);
     this.assets = Objects.requireNonNull(assets);
   }
 
@@ -74,7 +69,7 @@ public final class ManifestArtifactInspector implements ArtifactInspector {
         continue;
       }
       try {
-        Optional<byte[]> content = files.read(root, path);
+        Optional<ArtifactFingerprint> content = ArtifactReadProcess.read(runner, root, path);
         if (content.isEmpty()) {
           observations.add(
               new Diagnostic(
@@ -89,7 +84,7 @@ public final class ManifestArtifactInspector implements ArtifactInspector {
         if (baseline == null) {
           continue;
         }
-        boolean changed = !sha256(content.orElseThrow()).equals(baseline.sha256());
+        boolean changed = !content.orElseThrow().sha256().equals(baseline.sha256());
         switch (baseline.policy()) {
           case IMMUTABLE_CHECK -> {
             if (changed) {
@@ -113,11 +108,12 @@ public final class ManifestArtifactInspector implements ArtifactInspector {
               }
             } else {
               byte[] original = assets.load(Objects.requireNonNull(declarations.get(path)));
-              if (!sha256(original).equals(baseline.sha256())) {
+              ArtifactFingerprint originalFingerprint = ArtifactFingerprint.of(original);
+              if (!originalFingerprint.sha256().equals(baseline.sha256())) {
                 throw new IllegalArgumentException("Installed baseline mismatch");
               }
               boolean whitespaceOnly =
-                  withoutWhitespace(original).equals(withoutWhitespace(content.orElseThrow()));
+                  originalFingerprint.textSha256().equals(content.orElseThrow().textSha256());
               observations.add(
                   new Diagnostic(
                       "An edited, compiling test at " + label + ".",
@@ -129,13 +125,14 @@ public final class ManifestArtifactInspector implements ArtifactInspector {
           }
           case LEARNER_SCAFFOLD -> {}
         }
-      } catch (IOException unsafe) {
+      } catch (ArtifactReadProcess.ReadException unsafe) {
         observations.add(
             new Diagnostic(
                 "A bounded regular artifact at " + label + " inside the workspace.",
-                "The artifact could not be read safely.",
+                "The artifact could not be read safely within its worker deadline.",
                 "Replace symlinks or conflicting paths with regular files, stop concurrent moves, and retry."));
-        category = FailureCategory.WORKSPACE_CONFLICT;
+        return WorkerProcess.withCleanup(
+            new CheckOutcome.Failed(unsafe.category(), observations), unsafe.cleanup());
       } catch (IllegalArgumentException invalidCourse) {
         return new CheckOutcome.Failed(
             FailureCategory.INTERNAL_ERROR,
@@ -151,15 +148,6 @@ public final class ManifestArtifactInspector implements ArtifactInspector {
         : new CheckOutcome.Failed(category, observations);
   }
 
-  private static String withoutWhitespace(byte[] bytes) {
-    String text = new String(bytes, StandardCharsets.UTF_8);
-    StringBuilder result = new StringBuilder();
-    text.codePoints()
-        .filter(character -> !Character.isWhitespace(character))
-        .forEach(result::appendCodePoint);
-    return result.toString();
-  }
-
   private static String display(String path) {
     StringBuilder safe = new StringBuilder();
     path.codePoints()
@@ -170,13 +158,5 @@ public final class ManifestArtifactInspector implements ArtifactInspector {
         .limit(200)
         .forEach(safe::appendCodePoint);
     return safe.toString();
-  }
-
-  private static String sha256(byte[] bytes) {
-    try {
-      return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
-    } catch (NoSuchAlgorithmException unavailable) {
-      throw new IllegalStateException("Java must provide SHA-256.", unavailable);
-    }
   }
 }

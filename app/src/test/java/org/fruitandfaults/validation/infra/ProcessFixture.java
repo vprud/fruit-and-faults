@@ -44,6 +44,12 @@ public final class ProcessFixture {
         }
       }
       case "unicode" -> write(System.out, "я".repeat(20) + "\n");
+      case "stdin" ->
+          write(System.out, new String(System.in.readAllBytes(), StandardCharsets.UTF_8));
+      case "ignore-input" -> {
+        Files.writeString(Path.of("input-ready"), "ready");
+        new CountDownLatch(1).await(1, TimeUnit.MINUTES);
+      }
       case "hold" -> new CountDownLatch(1).await(1, TimeUnit.MINUTES);
       case "child" -> {
         Process child =

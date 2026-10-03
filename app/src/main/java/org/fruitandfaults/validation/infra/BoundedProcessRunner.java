@@ -29,7 +29,7 @@ import org.fruitandfaults.validation.application.ProcessRunner;
 
 /**
  * Runs argument lists directly, continuously drains both pipes, and reserves half the aggregate
- * retained-byte budget for each stream so stderr cannot be crowded out. Every call owns two drain
+ * retained-byte budget for each stream so stderr cannot be crowded out. Every call owns three I/O
  * threads and at most 1024 observed descendants. Cancellation and every other exit have a shared
  * two-second cleanup deadline. Descendant discovery is best effort: Java has no portable process
  * group/job object, so descendants that detach before observation cannot be tracked.
@@ -87,8 +87,7 @@ public final class BoundedProcessRunner implements ProcessRunner {
     State state = State.EXITED;
     int exitCode = 0;
     try {
-      session.startReaders();
-      process.getOutputStream().close();
+      session.startIo(request.standardInput());
       while (true) {
         session.observeDescendants();
         if (session.enumerationFailed) {
@@ -205,11 +204,11 @@ public final class BoundedProcessRunner implements ProcessRunner {
       stderr = new Tail(limit - limit / 2);
       drains =
           new ThreadPoolExecutor(
-              2,
-              2,
+              3,
+              3,
               0,
               TimeUnit.NANOSECONDS,
-              new ArrayBlockingQueue<>(2),
+              new ArrayBlockingQueue<>(3),
               runnable -> {
                 Thread thread = new Thread(runnable, "faf-process-drain");
                 thread.setDaemon(true);
@@ -217,7 +216,7 @@ public final class BoundedProcessRunner implements ProcessRunner {
               });
     }
 
-    void startReaders() {
+    void startIo(byte[] input) {
       readers.add(
           drains.submit(
               () -> {
@@ -228,6 +227,14 @@ public final class BoundedProcessRunner implements ProcessRunner {
           drains.submit(
               () -> {
                 collect(process.getErrorStream(), stderr);
+                return null;
+              }));
+      readers.add(
+          drains.submit(
+              () -> {
+                try (var stream = process.getOutputStream()) {
+                  stream.write(input);
+                }
                 return null;
               }));
     }

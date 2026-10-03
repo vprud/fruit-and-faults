@@ -13,10 +13,16 @@ public final class ValidationWorker {
   /**
    * Checks one known criterion and emits only a fixed result token after validation returns.
    *
-   * @param arguments criterion identity and per-invocation protocol nonce
+   * @param arguments criterion identity; authentication input is consumed before loading game code
    */
   public static void main(String[] arguments) {
-    if (arguments.length != 2 || !arguments[1].matches("[0-9a-f-]{36}")) {
+    if (arguments.length != 1) {
+      return;
+    }
+    byte[] secret;
+    try {
+      secret = WorkerProtocol.consumeSecret();
+    } catch (java.io.IOException invalidInput) {
       return;
     }
     String token;
@@ -39,6 +45,7 @@ public final class ValidationWorker {
     } catch (RuntimeException | Error workerFailure) {
       token = "INTERNAL_ERROR";
     }
-    System.out.println("FRUIT_VALIDATION " + arguments[1] + " " + token);
+    System.out.println(WorkerProtocol.frame(secret, token));
+    java.util.Arrays.fill(secret, (byte) 0);
   }
 }

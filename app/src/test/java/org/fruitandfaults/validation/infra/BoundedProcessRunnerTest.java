@@ -67,6 +67,62 @@ class BoundedProcessRunnerTest {
   }
 
   @Test
+  void copiesBoundedStandardInputAndClosesThePipeAfterDelivery() {
+    byte[] bytes = "one-time secret".getBytes(StandardCharsets.UTF_8);
+    ProcessRequest request =
+        new ProcessRequest(command("stdin"), root, Duration.ofSeconds(10), 4096, bytes);
+    bytes[0] = 'X';
+    request.standardInput()[0] = 'Y';
+    ProcessResult.Exited result =
+        assertInstanceOf(ProcessResult.Exited.class, new BoundedProcessRunner().run(request));
+    assertEquals(0, result.exitCode());
+    assertEquals("one-time secret", result.output().stdout());
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            new ProcessRequest(
+                command("stdin"), root, Duration.ofSeconds(10), 4096, new byte[65_537]));
+  }
+
+  @Test
+  void blockedInputDeliverySharesTheProcessDeadlineAndLeavesNoIoThreads() throws Exception {
+    AtomicLong clock = new AtomicLong();
+    AtomicReference<Process> child = new AtomicReference<>();
+    try (WatchService ready = root.getFileSystem().newWatchService()) {
+      root.register(ready, StandardWatchEventKinds.ENTRY_CREATE);
+      BoundedProcessRunner runner =
+          new BoundedProcessRunner(
+              builder -> {
+                Process process = builder.start();
+                child.set(process);
+                return process;
+              },
+              (process, nanos) -> {
+                assertTrue(ready.poll(5, TimeUnit.SECONDS) != null);
+                assertTrue(Files.exists(root.resolve("input-ready")));
+                clock.set(TimeUnit.SECONDS.toNanos(10));
+                return false;
+              },
+              clock::get);
+      ProcessResult.TimedOut result =
+          assertInstanceOf(
+              ProcessResult.TimedOut.class,
+              runner.run(
+                  new ProcessRequest(
+                      command("ignore-input"),
+                      root,
+                      Duration.ofSeconds(10),
+                      4096,
+                      new byte[65_536])));
+      assertEquals(ProcessResult.Cleanup.COMPLETE, result.cleanup());
+      assertFalse(Objects.requireNonNull(child.get()).isAlive());
+      assertFalse(
+          Thread.getAllStackTraces().keySet().stream()
+              .anyMatch(thread -> thread.isAlive() && thread.getName().startsWith("faf-process-")));
+    }
+  }
+
+  @Test
   void drainsBothFullPipesAndRetainsTheirUsefulTailsWithinAggregateBudget() {
     ProcessRequest request =
         new ProcessRequest(command("flood"), root, Duration.ofSeconds(10), 257);
