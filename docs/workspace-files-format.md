@@ -37,28 +37,35 @@ authorizes restoring or overwriting learner changes.
 
 The hash records the original raw disclosed bytes, not the current learner file.
 Policies are exactly `IMMUTABLE_CHECK`, `EDITABLE_TEMPLATE`, or
-`LEARNER_SCAFFOLD`. Duplicate normalized paths, unknown fields, duplicate JSON
+`LEARNER_SCAFFOLD`. Duplicate normalized paths, case or Unicode aliases, unknown fields, duplicate JSON
 fields, wrong field types, malformed facts, and trailing documents are rejected.
 Unsupported format versions and invalid documents remain untouched. The document
 limit is 1 MiB; individual inspected or disclosed assets are limited to 16 MiB.
 
-New files are flushed to a temporary file in their destination directory, then
-published by an exclusive hard link. If another file appears after preflight,
-publication fails without replacing it. Filesystems without this primitive fail
-safely; the adapter never substitutes an overwriting asset move. Tool-owned
-manifest updates use atomic replacement where supported and a complete-file
-replacement move otherwise. The fallback does not promise crash-atomic
-replacement on every filesystem.
+`WorkspaceFiles.writeNewSafely` reserves each learner destination with
+directory-relative `CREATE_NEW` through its verified secure parent handle, then
+writes and flushes that channel. A file appearing after preflight makes creation
+fail without replacing it. Bytes become visible during writing: the operation
+promises confinement and exclusivity, not atomic visibility. An ordinary failure
+removes only the identified created entry; a crash may leave a partial target
+for disclosure-journal recovery. Such a target is a conflict, never permission
+to overwrite it.
 
-Temporary cleanup verifies the original file identity through an open secure
-directory handle. It preserves foreign replacements and never deletes through a
-replacement parent symlink. If the provider cannot verify cleanup safely, the
-temporary file is retained. Multi-file crash recovery belongs to the disclosure
-journal, which is implemented separately.
+Tool-owned manifest writes create and flush a same-directory temporary file
+through the verified secure handle, then move it atomically through that same
+handle. Unsupported atomic replacement fails while preserving the previous
+manifest. There is no pathname move or destructive replacement fallback.
 
-Directory identities are checked before publication and metadata replacement.
-The Java filesystem API has no public directory-relative hard-link primitive;
-an adversarial simultaneous parent rename between a pathname check and a
-filesystem call remains a limitation. Do not concurrently rename workspace
-directories while the CLI accesses them. This boundary is intended for local
-learner experimentation, not isolation from a hostile concurrent process.
+Cleanup verifies the original file identity through an open secure directory
+handle. It preserves foreign replacements and never deletes through a replacement
+parent symlink. Providers without secure handles, stable directory/regular-file
+keys, or flushable channels report `UNSUPPORTED_PUBLICATION`. Regular-file key
+support is checked with an owned temporary before reserving a learner destination.
+If a missing key prevents safe cleanup, that temporary is retained. Multi-file
+crash recovery belongs to the disclosure journal, which is implemented separately.
+
+Creation, writes, replacement, and cleanup use the captured parent directory
+handle. Directory identities are checked before and after these operations.
+Replacing the parent pathname cannot redirect an asset write or metadata move to
+an outside directory; the operation reports the changed workspace as a failure.
+This boundary is intended for local learner experimentation.

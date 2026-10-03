@@ -1,5 +1,8 @@
 package org.fruitandfaults.workspace.domain;
 
+import java.text.Normalizer;
+import java.util.Locale;
+
 /**
  * A normalized slash-separated relative logical path, independent of the host filesystem.
  *
@@ -30,5 +33,14 @@ public record WorkspacePath(String value) {
    */
   public static WorkspacePath parse(String value) {
     return new WorkspacePath(value);
+  }
+
+  /**
+   * Identifies conservative case and Unicode-normalization aliases on every host.
+   *
+   * @return canonical key used consistently for portable destination comparison
+   */
+  public String aliasKey() {
+    return Normalizer.normalize(value, Normalizer.Form.NFD).toLowerCase(Locale.ROOT);
   }
 }

@@ -1,23 +1,26 @@
 package org.fruitandfaults.workspace.infra;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.fruitandfaults.course.domain.AssetId;
 import org.fruitandfaults.course.domain.AssetPolicy;
 import org.fruitandfaults.course.domain.LessonId;
 import org.fruitandfaults.workspace.application.ManagedFilesReadException;
+import org.fruitandfaults.workspace.application.WorkspaceWriteException;
 import org.fruitandfaults.workspace.domain.ManagedFile;
 import org.fruitandfaults.workspace.domain.ManagedFiles;
 import org.fruitandfaults.workspace.domain.WorkspacePath;
@@ -158,22 +161,23 @@ class JacksonManagedFilesRepositoryTest {
     Files.writeString(stateDirectory().resolve("unrelated.tmp"), "learner work");
     JacksonManagedFilesRepository partial =
         new JacksonManagedFilesRepository(
-            (temporary, bytes) -> {
-              assertEquals(stateDirectory(), temporary.getParent());
-              Files.writeString(temporary, "partial");
+            (channel, bytes) -> {
+              channel.write(ByteBuffer.wrap("partial".getBytes(StandardCharsets.UTF_8)));
               throw new IOException("injected partial write");
             },
-            (temporary, target, atomic) -> {
+            (directory, temporary, target) -> {
               throw new AssertionError("Partial write cannot replace state");
             });
     assertThrows(IOException.class, () -> partial.save(root, ManagedFiles.empty()));
     assertArrayEquals(before, Files.readAllBytes(stateFile()));
     JacksonManagedFilesRepository failedMove =
         new JacksonManagedFilesRepository(
-            (temporary, bytes) -> Files.write(temporary, bytes),
-            (temporary, target, atomic) -> {
-              assertEquals(target.getParent(), temporary.getParent());
-              assertTrue(Files.readString(temporary).contains("\"files\" : [ ]"));
+            (channel, bytes) -> SafeWorkspaceFiles.writeFlushed(channel, bytes),
+            (directory, temporary, target) -> {
+              assertEquals(Path.of("managed-files.json"), target);
+              assertTrue(
+                  Files.readString(stateDirectory().resolve(temporary))
+                      .contains("\"files\" : [ ]"));
               throw new IOException("injected move failure");
             });
     assertThrows(IOException.class, () -> failedMove.save(root, ManagedFiles.empty()));
@@ -183,23 +187,30 @@ class JacksonManagedFilesRepositoryTest {
   }
 
   @Test
-  void unsupportedAtomicMoveFallsBackOnlyAfterCompleteDocument() throws IOException {
+  void unsupportedAtomicMoveCannotInvokeDestructiveFallback() throws IOException {
     writeJson(VALID);
+    AtomicInteger attempts = new AtomicInteger();
     JacksonManagedFilesRepository fallback =
         new JacksonManagedFilesRepository(
-            (temporary, bytes) -> Files.write(temporary, bytes),
-            (temporary, target, atomic) -> {
-              assertTrue(Files.readString(temporary).contains("\"files\" : [ ]"));
-              assertEquals(VALID, Files.readString(target));
-              if (atomic) {
+            (channel, bytes) -> SafeWorkspaceFiles.writeFlushed(channel, bytes),
+            (directory, temporary, target) -> {
+              assertTrue(
+                  Files.readString(stateDirectory().resolve(temporary))
+                      .contains("\"files\" : [ ]"));
+              assertEquals(VALID, Files.readString(stateDirectory().resolve(target)));
+              if (attempts.getAndIncrement() == 0) {
                 throw new AtomicMoveNotSupportedException(
                     temporary.toString(), target.toString(), "injected unsupported atomic move");
               }
-              Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+              Files.delete(stateDirectory().resolve(target));
+              throw new IOException("injected destructive fallback failure");
             });
-    fallback.save(root, ManagedFiles.empty());
-    assertEquals(Optional.of(ManagedFiles.empty()), repository.load(root));
-    assertEquals(List.of(stateFile()), children(stateDirectory()));
+    assertAll(
+        () ->
+            assertThrows(
+                WorkspaceWriteException.class, () -> fallback.save(root, ManagedFiles.empty())),
+        () -> assertEquals(VALID, Files.readString(stateFile())),
+        () -> assertEquals(List.of(stateFile()), children(stateDirectory())));
   }
 
   @Test
@@ -209,13 +220,14 @@ class JacksonManagedFilesRepositoryTest {
     Files.writeString(outside.resolve("managed-files.json"), "outside state");
     JacksonManagedFilesRepository failing =
         new JacksonManagedFilesRepository(
-            (temporary, bytes) -> {
+            (channel, bytes) -> {
+              Path temporary = children(workspace.resolve(".fruit-and-faults")).getFirst();
               Files.writeString(outside.resolve(temporary.getFileName()), "outside sentinel");
               Files.move(
                   workspace.resolve(".fruit-and-faults"), workspace.resolve("renamed-metadata"));
               Files.createSymbolicLink(workspace.resolve(".fruit-and-faults"), outside);
             },
-            (temporary, target, atomic) -> {
+            (directory, temporary, target) -> {
               throw new AssertionError("Replaced metadata cannot publish");
             });
     assertThrows(IOException.class, () -> failing.save(workspace, ManagedFiles.empty()));
@@ -233,12 +245,13 @@ class JacksonManagedFilesRepositoryTest {
   void cleanupCannotDeleteForeignTemporaryReplacement() throws IOException {
     JacksonManagedFilesRepository failing =
         new JacksonManagedFilesRepository(
-            (temporary, bytes) -> {
+            (channel, bytes) -> {
+              Path temporary = children(root.resolve(".fruit-and-faults")).getFirst();
               Files.move(temporary, root.resolve("relocated-owned-temporary"));
               Files.writeString(temporary, "foreign replacement");
               throw new IOException("injected temporary replacement");
             },
-            (temporary, target, atomic) -> {
+            (directory, temporary, target) -> {
               throw new AssertionError("Failed write cannot publish");
             });
     assertThrows(IOException.class, () -> failing.save(root, ManagedFiles.empty()));
@@ -287,17 +300,99 @@ class JacksonManagedFilesRepositoryTest {
     writeJson(VALID);
     JacksonManagedFilesRepository concurrent =
         new JacksonManagedFilesRepository(
-            (temporary, bytes) -> {
-              Files.write(temporary, bytes);
+            (channel, bytes) -> {
+              SafeWorkspaceFiles.writeFlushed(channel, bytes);
               Files.move(stateFile(), root.resolve("relocated-manifest"));
               Files.writeString(stateFile(), "{\"formatVersion\":2}");
             },
-            (temporary, target, atomic) -> {
+            (directory, temporary, target) -> {
               throw new AssertionError("Foreign replacement cannot be overwritten");
             });
     assertThrows(IOException.class, () -> concurrent.save(root, ManagedFiles.empty()));
     assertEquals("{\"formatVersion\":2}", Files.readString(stateFile()));
     assertEquals(VALID, Files.readString(root.resolve("relocated-manifest")));
+  }
+
+  @Test
+  void parentSwapInsideMoverCannotReplaceOutsideManifest() throws IOException {
+    Path workspace = Files.createDirectory(root.resolve("workspace"));
+    Path outside = Files.createDirectory(root.resolve("outside"));
+    Files.createDirectory(workspace.resolve(".fruit-and-faults"));
+    Files.writeString(workspace.resolve(".fruit-and-faults/managed-files.json"), VALID);
+    Files.writeString(outside.resolve("managed-files.json"), "outside manifest");
+    Files.writeString(outside.resolve("sentinel"), "outside sentinel");
+    JacksonManagedFilesRepository redirected =
+        new JacksonManagedFilesRepository(
+            SafeWorkspaceFiles::writeFlushed,
+            (directory, temporary, target) -> {
+              Files.writeString(outside.resolve(temporary.getFileName()), "outside source");
+              Files.move(
+                  workspace.resolve(".fruit-and-faults"), workspace.resolve("renamed-metadata"));
+              Files.createSymbolicLink(workspace.resolve(".fruit-and-faults"), outside);
+              directory.move(temporary, directory, target);
+            });
+    assertAll(
+        () ->
+            assertThrows(
+                WorkspaceWriteException.class,
+                () -> redirected.save(workspace, ManagedFiles.empty())),
+        () ->
+            assertEquals(
+                "outside manifest", Files.readString(outside.resolve("managed-files.json"))),
+        () -> assertEquals("outside sentinel", Files.readString(outside.resolve("sentinel"))));
+  }
+
+  @Test
+  void caseFoldAndUnicodeAliasesAreTypedInvalidStateAndNeverRewritten() throws IOException {
+    String caseAlias = ENTRY.replace("src/Game.java", "src/game.java");
+    assertRejectedAndPreserved(
+        "{\"formatVersion\":1,\"files\":[" + ENTRY + "," + caseAlias + "]}",
+        ManagedFilesReadException.Reason.INVALID_STATE);
+    String composed = ENTRY.replace("src/Game.java", "src/caf\u00e9.java");
+    String decomposed = ENTRY.replace("src/Game.java", "src/cafe\u0301.java");
+    assertRejectedAndPreserved(
+        "{\"formatVersion\":1,\"files\":[" + composed + "," + decomposed + "]}",
+        ManagedFilesReadException.Reason.INVALID_STATE);
+  }
+
+  @Test
+  void providerWithoutFileKeysCannotInitializeOrReplaceManifest() throws IOException {
+    JacksonManagedFilesRepository unsupported =
+        new JacksonManagedFilesRepository(
+            SafeWorkspaceFiles::writeFlushed,
+            (directory, temporary, target) -> directory.move(temporary, directory, target),
+            _ -> null);
+    WorkspaceWriteException initial =
+        assertThrows(
+            WorkspaceWriteException.class, () -> unsupported.save(root, ManagedFiles.empty()));
+    assertEquals(WorkspaceWriteException.Reason.UNSUPPORTED_PUBLICATION, initial.reason());
+    assertTrue(Files.notExists(root.resolve(".fruit-and-faults")));
+    writeJson(VALID);
+    WorkspaceWriteException update =
+        assertThrows(
+            WorkspaceWriteException.class, () -> unsupported.save(root, ManagedFiles.empty()));
+    assertEquals(WorkspaceWriteException.Reason.UNSUPPORTED_PUBLICATION, update.reason());
+    assertEquals(VALID, Files.readString(stateFile()));
+    assertEquals(List.of(stateFile()), children(stateDirectory()));
+  }
+
+  @Test
+  void missingTemporaryFileKeyPreservesManifestAndRetainsAmbiguousTemporary() throws IOException {
+    writeJson(VALID);
+    JacksonManagedFilesRepository unsupported =
+        new JacksonManagedFilesRepository(
+            SafeWorkspaceFiles::writeFlushed,
+            (directory, temporary, target) -> directory.move(temporary, directory, target),
+            attributes -> attributes.isDirectory() ? attributes.fileKey() : null);
+    WorkspaceWriteException failure =
+        assertThrows(
+            WorkspaceWriteException.class, () -> unsupported.save(root, ManagedFiles.empty()));
+    assertEquals(WorkspaceWriteException.Reason.UNSUPPORTED_PUBLICATION, failure.reason());
+    assertEquals(VALID, Files.readString(stateFile()));
+    assertEquals(2, children(stateDirectory()).size());
+    assertTrue(
+        children(stateDirectory()).stream()
+            .anyMatch(path -> path.getFileName().toString().endsWith(".tmp")));
   }
 
   private void assertRejectedAndPreserved(String json, ManagedFilesReadException.Reason reason)

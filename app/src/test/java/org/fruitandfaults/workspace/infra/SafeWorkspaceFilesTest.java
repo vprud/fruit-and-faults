@@ -1,5 +1,6 @@
 package org.fruitandfaults.workspace.infra;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -7,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
@@ -43,7 +45,7 @@ class SafeWorkspaceFilesTest {
   void writesRawBytesWithSpacesAndCyrillicThroughVerifiedDirectories() throws IOException {
     WorkspacePath path = WorkspacePath.parse("моя игра/src/Game.java");
     assertInstanceOf(DisclosurePlan.Missing.class, files.inspect(root, path));
-    files.writeNewAtomically(root, path, BYTES);
+    files.writeNewSafely(root, path, BYTES);
     assertEquals("hello", Files.readString(root.resolve(path.value())));
     assertEquals(new DisclosurePlan.RegularFile(HASH), files.inspect(root, path));
     assertEquals(List.of(root.resolve(path.value())), children(root.resolve("моя игра/src")));
@@ -62,8 +64,7 @@ class SafeWorkspaceFilesTest {
         plan.conflicts());
     assertThrows(
         IOException.class,
-        () ->
-            files.writeNewAtomically(root, asset.path(), "other".getBytes(StandardCharsets.UTF_8)));
+        () -> files.writeNewSafely(root, asset.path(), "other".getBytes(StandardCharsets.UTF_8)));
     assertEquals("hello", Files.readString(root.resolve(asset.path().value())));
   }
 
@@ -76,9 +77,7 @@ class SafeWorkspaceFilesTest {
     assertInstanceOf(DisclosurePlan.Conflicted.class, plan);
     assertThrows(
         IOException.class,
-        () ->
-            files.writeNewAtomically(
-                root, plan, Map.of(first.path(), BYTES, second.path(), BYTES)));
+        () -> files.writeNewSafely(root, plan, Map.of(first.path(), BYTES, second.path(), BYTES)));
     assertTrue(Files.notExists(root.resolve("new")));
     assertEquals("learner work", Files.readString(root.resolve("learner.txt")));
   }
@@ -91,23 +90,21 @@ class SafeWorkspaceFilesTest {
     Files.writeString(root.resolve("other.java"), "late learner work");
     assertThrows(
         IOException.class,
-        () ->
-            files.writeNewAtomically(
-                root, plan, Map.of(first.path(), BYTES, second.path(), BYTES)));
+        () -> files.writeNewSafely(root, plan, Map.of(first.path(), BYTES, second.path(), BYTES)));
     assertTrue(Files.notExists(root.resolve("new")));
     Files.delete(root.resolve("other.java"));
     assertThrows(
         IOException.class,
         () ->
-            files.writeNewAtomically(
+            files.writeNewSafely(
                 root, plan, Map.of(first.path(), BYTES, second.path(), new byte[0])));
     assertTrue(Files.notExists(root.resolve("new")));
-    files.writeNewAtomically(root, plan, Map.of(first.path(), BYTES, second.path(), BYTES));
+    files.writeNewSafely(root, plan, Map.of(first.path(), BYTES, second.path(), BYTES));
     assertEquals("hello", Files.readString(root.resolve(first.path().value())));
     assertEquals("hello", Files.readString(root.resolve(second.path().value())));
     DisclosurePlan repeated =
         files.preflight(root, List.of(first, second), new ManagedFiles(List.of(first, second)));
-    files.writeNewAtomically(root, repeated, Map.of());
+    files.writeNewSafely(root, repeated, Map.of());
     assertEquals(
         List.of(first, second),
         assertInstanceOf(DisclosurePlan.Applicable.class, repeated).alreadyApplied());
@@ -129,7 +126,7 @@ class SafeWorkspaceFilesTest {
           DisclosurePlan.UnsafePath.class, files.inspect(workspace, WorkspacePath.parse(path)));
       assertThrows(
           IOException.class,
-          () -> files.writeNewAtomically(workspace, WorkspacePath.parse(path), BYTES));
+          () -> files.writeNewSafely(workspace, WorkspacePath.parse(path), BYTES));
     }
     Files.createSymbolicLink(root.resolve("linked-root"), workspace);
     assertThrows(
@@ -150,7 +147,7 @@ class SafeWorkspaceFilesTest {
         DisclosurePlan.UnsafePath.class, files.inspect(root, WorkspacePath.parse("directory")));
     assertThrows(
         IOException.class,
-        () -> files.writeNewAtomically(root, WorkspacePath.parse("parent/new"), BYTES));
+        () -> files.writeNewSafely(root, WorkspacePath.parse("parent/new"), BYTES));
     assertThrows(
         IOException.class, () -> files.inspect(root.resolve("absent"), WorkspacePath.parse("new")));
   }
@@ -183,9 +180,7 @@ class SafeWorkspaceFilesTest {
         plan.conflicts());
     assertThrows(
         IOException.class,
-        () ->
-            files.writeNewAtomically(
-                root, plan, Map.of(parent.path(), BYTES, child.path(), BYTES)));
+        () -> files.writeNewSafely(root, plan, Map.of(parent.path(), BYTES, child.path(), BYTES)));
     assertEquals(List.of(), children(root));
   }
 
@@ -215,61 +210,46 @@ class SafeWorkspaceFilesTest {
     Files.writeString(root.resolve("unrelated.tmp"), "learner work");
     SafeWorkspaceFiles failing =
         new SafeWorkspaceFiles(
-            (temporary, bytes) -> Files.write(temporary, bytes),
-            (temporary, target) -> {
-              assertEquals(target.getParent(), temporary.getParent());
-              assertEquals("hello", Files.readString(temporary));
+            (channel, bytes) -> SafeWorkspaceFiles.writeFlushed(channel, bytes),
+            (directory, target) -> {
+              assertEquals(Path.of("Game.java"), target);
               throw new AtomicMoveNotSupportedException(
-                  temporary.toString(), target.toString(), "injected publication failure");
+                  "created-entry", target.toString(), "injected publication failure");
             });
     assertThrows(
         IOException.class,
-        () -> failing.writeNewAtomically(root, WorkspacePath.parse("Game.java"), BYTES));
+        () -> failing.writeNewSafely(root, WorkspacePath.parse("Game.java"), BYTES));
     assertEquals(List.of(root.resolve("unrelated.tmp")), children(root));
     assertEquals("learner work", Files.readString(root.resolve("unrelated.tmp")));
   }
 
   @Test
-  void targetAppearingDuringWriteAndExclusivePublicationIsPreserved() throws IOException {
+  void targetAppearingBeforeExclusiveCreationIsPreserved() throws IOException {
     SafeWorkspaceFiles lateTarget =
         new SafeWorkspaceFiles(
-            (temporary, bytes) -> {
-              Files.write(temporary, bytes);
+            SafeWorkspaceFiles::writeFlushed,
+            (directory, target) -> {
               Files.writeString(root.resolve("Game.java"), "late learner work");
-            },
-            (temporary, target) -> Files.createLink(target, temporary));
-    assertThrows(
-        IOException.class,
-        () -> lateTarget.writeNewAtomically(root, WorkspacePath.parse("Game.java"), BYTES));
-    assertEquals("late learner work", Files.readString(root.resolve("Game.java")));
-    Files.delete(root.resolve("Game.java"));
-    SafeWorkspaceFiles racingPublication =
-        new SafeWorkspaceFiles(
-            (temporary, bytes) -> Files.write(temporary, bytes),
-            (temporary, target) -> {
-              Files.writeString(target, "racing learner work");
-              Files.createLink(target, temporary);
+              return SafeWorkspaceFiles.createNewChannel(directory, target);
             });
     assertThrows(
         IOException.class,
-        () -> racingPublication.writeNewAtomically(root, WorkspacePath.parse("Game.java"), BYTES));
-    assertEquals("racing learner work", Files.readString(root.resolve("Game.java")));
+        () -> lateTarget.writeNewSafely(root, WorkspacePath.parse("Game.java"), BYTES));
+    assertEquals("late learner work", Files.readString(root.resolve("Game.java")));
   }
 
   @Test
   void partialWriteFailureCleansOnlyOwnedTemporaryFile() throws IOException {
     SafeWorkspaceFiles failing =
         new SafeWorkspaceFiles(
-            (temporary, bytes) -> {
-              Files.writeString(temporary, "partial");
+            (channel, bytes) -> {
+              channel.write(ByteBuffer.wrap("partial".getBytes(StandardCharsets.UTF_8)));
               throw new IOException("injected partial write");
             },
-            (temporary, target) -> {
-              throw new AssertionError("Failed write cannot publish");
-            });
+            SafeWorkspaceFiles::createNewChannel);
     assertThrows(
         IOException.class,
-        () -> failing.writeNewAtomically(root, WorkspacePath.parse("Game.java"), BYTES));
+        () -> failing.writeNewSafely(root, WorkspacePath.parse("Game.java"), BYTES));
     assertEquals(List.of(), children(root));
   }
 
@@ -277,42 +257,33 @@ class SafeWorkspaceFilesTest {
   void unsupportedExclusivePublicationFailsSafelyWithoutFallback() throws IOException {
     SafeWorkspaceFiles unsupported =
         new SafeWorkspaceFiles(
-            (temporary, bytes) -> Files.write(temporary, bytes),
-            (temporary, target) -> {
-              throw new UnsupportedOperationException("provider cannot link");
+            (channel, bytes) -> SafeWorkspaceFiles.writeFlushed(channel, bytes),
+            (directory, target) -> {
+              throw new UnsupportedOperationException("provider cannot securely create");
             });
     WorkspaceWriteException failure =
         assertThrows(
             WorkspaceWriteException.class,
-            () -> unsupported.writeNewAtomically(root, WorkspacePath.parse("Game.java"), BYTES));
+            () -> unsupported.writeNewSafely(root, WorkspacePath.parse("Game.java"), BYTES));
     assertEquals(WorkspaceWriteException.Reason.UNSUPPORTED_PUBLICATION, failure.reason());
     assertEquals(List.of(), children(root));
   }
 
   @Test
-  void cleanupPreservesForeignTemporaryReplacement() throws IOException {
+  void cleanupPreservesForeignReplacementOfReservedTarget() throws IOException {
     SafeWorkspaceFiles failing =
         new SafeWorkspaceFiles(
-            (temporary, bytes) -> {
-              Files.move(temporary, root.resolve("relocated-owned-temporary"));
-              Files.writeString(temporary, "foreign replacement");
+            (channel, bytes) -> {
+              Files.move(root.resolve("Game.java"), root.resolve("relocated-owned-entry"));
+              Files.writeString(root.resolve("Game.java"), "foreign replacement");
               throw new IOException("injected temporary replacement");
             },
-            (temporary, target) -> {
-              throw new AssertionError("Failed write cannot publish");
-            });
+            SafeWorkspaceFiles::createNewChannel);
     assertThrows(
         IOException.class,
-        () -> failing.writeNewAtomically(root, WorkspacePath.parse("Game.java"), BYTES));
-    try (var entries = Files.list(root)) {
-      Path foreign =
-          entries
-              .filter(path -> !path.getFileName().toString().equals("relocated-owned-temporary"))
-              .findFirst()
-              .orElseThrow();
-      assertEquals("foreign replacement", Files.readString(foreign));
-    }
-    assertTrue(Files.exists(root.resolve("relocated-owned-temporary")));
+        () -> failing.writeNewSafely(root, WorkspacePath.parse("Game.java"), BYTES));
+    assertEquals("foreign replacement", Files.readString(root.resolve("Game.java")));
+    assertTrue(Files.exists(root.resolve("relocated-owned-entry")));
   }
 
   @Test
@@ -322,20 +293,102 @@ class SafeWorkspaceFilesTest {
     Files.createDirectory(workspace.resolve("src"));
     SafeWorkspaceFiles failing =
         new SafeWorkspaceFiles(
-            (temporary, bytes) -> {
-              Files.writeString(outside.resolve(temporary.getFileName()), "outside sentinel");
+            (channel, bytes) -> {
+              Files.writeString(outside.resolve("sentinel"), "outside sentinel");
               Files.move(workspace.resolve("src"), workspace.resolve("renamed-src"));
               Files.createSymbolicLink(workspace.resolve("src"), outside);
             },
-            (temporary, target) -> {
-              throw new AssertionError("Replaced parent cannot publish");
-            });
+            SafeWorkspaceFiles::createNewChannel);
     assertThrows(
         IOException.class,
-        () -> failing.writeNewAtomically(workspace, WorkspacePath.parse("src/Game.java"), BYTES));
+        () -> failing.writeNewSafely(workspace, WorkspacePath.parse("src/Game.java"), BYTES));
     assertTrue(Files.notExists(outside.resolve("Game.java")));
     assertEquals(1, children(outside).size());
     assertEquals("outside sentinel", Files.readString(children(outside).getFirst()));
+  }
+
+  @Test
+  void parentSwapInsideCreatorCannotCreateOutsideAsset() throws IOException {
+    Path workspace = Files.createDirectory(root.resolve("workspace"));
+    Path outside = Files.createDirectory(root.resolve("outside"));
+    Files.createDirectory(workspace.resolve("src"));
+    Files.writeString(outside.resolve("sentinel"), "outside sentinel");
+    SafeWorkspaceFiles redirected =
+        new SafeWorkspaceFiles(
+            SafeWorkspaceFiles::writeFlushed,
+            (directory, target) -> {
+              Files.move(workspace.resolve("src"), workspace.resolve("renamed-src"));
+              Files.createSymbolicLink(workspace.resolve("src"), outside);
+              return SafeWorkspaceFiles.createNewChannel(directory, target);
+            });
+    assertAll(
+        () ->
+            assertThrows(
+                WorkspaceWriteException.class,
+                () ->
+                    redirected.writeNewSafely(
+                        workspace, WorkspacePath.parse("src/Game.java"), BYTES)),
+        () -> assertTrue(Files.notExists(outside.resolve("Game.java"))),
+        () -> assertEquals("outside sentinel", Files.readString(outside.resolve("sentinel"))));
+  }
+
+  @Test
+  void preflightIndependentlyRejectsAmbiguousSuppliedOwnership() throws IOException {
+    ManagedFile upper = asset("Game.java");
+    ManagedFile lower = asset("game.java");
+    DisclosurePlan.Conflicted plan =
+        assertInstanceOf(
+            DisclosurePlan.Conflicted.class,
+            files.preflight(root, List.of(lower), new ManagedFiles(List.of(upper, lower))));
+    assertTrue(
+        plan.conflicts()
+            .contains(
+                new DisclosureConflict(lower.path(), DisclosureConflict.Reason.CASE_COLLISION)));
+    assertEquals(List.of(), children(root));
+  }
+
+  @Test
+  void missingFileKeyIsAnUnsupportedCapabilityRatherThanGenericIoFailure() throws IOException {
+    Path temporary = Files.writeString(root.resolve("owned.tmp"), "unchanged temporary");
+    WorkspaceWriteException failure =
+        assertThrows(
+            WorkspaceWriteException.class,
+            () ->
+                SafeWorkspaceFiles.requireStableKey(
+                    SafeWorkspaceFiles.attributes(temporary), _ -> null));
+    assertEquals(WorkspaceWriteException.Reason.UNSUPPORTED_PUBLICATION, failure.reason());
+    assertEquals("unchanged temporary", Files.readString(temporary));
+    assertTrue(Files.notExists(root.resolve("Game.java")));
+  }
+
+  @Test
+  void providerWithoutFileKeysCannotCreateALearnerTarget() throws IOException {
+    SafeWorkspaceFiles unsupported =
+        new SafeWorkspaceFiles(
+            SafeWorkspaceFiles::writeFlushed, SafeWorkspaceFiles::createNewChannel, _ -> null);
+    WorkspaceWriteException failure =
+        assertThrows(
+            WorkspaceWriteException.class,
+            () -> unsupported.writeNewSafely(root, WorkspacePath.parse("Game.java"), BYTES));
+    assertEquals(WorkspaceWriteException.Reason.UNSUPPORTED_PUBLICATION, failure.reason());
+    assertEquals(List.of(), children(root));
+  }
+
+  @Test
+  void missingRegularFileKeysFailBeforeReservingLearnerTarget() throws IOException {
+    SafeWorkspaceFiles unsupported =
+        new SafeWorkspaceFiles(
+            SafeWorkspaceFiles::writeFlushed,
+            SafeWorkspaceFiles::createNewChannel,
+            attributes -> attributes.isDirectory() ? attributes.fileKey() : null);
+    WorkspaceWriteException failure =
+        assertThrows(
+            WorkspaceWriteException.class,
+            () -> unsupported.writeNewSafely(root, WorkspacePath.parse("Game.java"), BYTES));
+    assertEquals(WorkspaceWriteException.Reason.UNSUPPORTED_PUBLICATION, failure.reason());
+    assertTrue(Files.notExists(root.resolve("Game.java")));
+    assertEquals(1, children(root).size());
+    assertTrue(children(root).getFirst().getFileName().toString().endsWith(".tmp"));
   }
 
   private static ManagedFile asset(String path) {

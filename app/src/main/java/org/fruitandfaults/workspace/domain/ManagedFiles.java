@@ -1,5 +1,6 @@
 package org.fruitandfaults.workspace.domain;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -39,5 +40,22 @@ public record ManagedFiles(List<ManagedFile> files) {
    */
   public Optional<ManagedFile> find(WorkspacePath path) {
     return files.stream().filter(file -> file.path().equals(path)).findFirst();
+  }
+
+  /**
+   * Finds ambiguous portable destinations independently of serialized input validation.
+   *
+   * @return path-level conflicts for later case or Unicode aliases
+   */
+  public List<DisclosureConflict> aliasConflicts() {
+    Set<String> aliases = new HashSet<>();
+    List<DisclosureConflict> conflicts = new ArrayList<>();
+    for (ManagedFile file : files) {
+      if (!aliases.add(file.path().aliasKey())) {
+        conflicts.add(
+            new DisclosureConflict(file.path(), DisclosureConflict.Reason.CASE_COLLISION));
+      }
+    }
+    return List.copyOf(conflicts);
   }
 }
