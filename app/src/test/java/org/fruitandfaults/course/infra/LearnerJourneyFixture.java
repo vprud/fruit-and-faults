@@ -3,11 +3,15 @@ package org.fruitandfaults.course.infra;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigInteger;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -76,7 +80,11 @@ public final class LearnerJourneyFixture {
    * @throws Exception if the owned process fails to launch, is interrupted, or exceeds its deadline
    */
   public static BuildResult build(Path workspace) throws Exception {
-    Path gradleHome = prepareGradleHome(workspace);
+    return build(workspace, cachedGradleHome());
+  }
+
+  static BuildResult build(Path workspace, Path cacheSource) throws Exception {
+    Path gradleHome = prepareGradleHome(workspace, cacheSource);
     List<String> command = new ArrayList<>();
     if (System.getProperty("os.name").startsWith("Windows")) {
       command.addAll(List.of("cmd", "/d", "/c", "gradlew.bat"));
@@ -154,36 +162,24 @@ public final class LearnerJourneyFixture {
     return count;
   }
 
-  private static Path prepareGradleHome(Path workspace) throws IOException {
+  private static Path prepareGradleHome(Path workspace, Path source) throws IOException {
     Path isolated = workspace.toRealPath().resolve(".gradle/fixture-user-home");
-    if (Files.isRegularFile(isolated.resolve("init.gradle"), LinkOption.NOFOLLOW_LINKS)) {
-      return isolated;
-    }
-    Path source = cachedGradleHome();
     Properties wrapper = new Properties();
     try (InputStream input =
         Files.newInputStream(workspace.resolve("gradle/wrapper/gradle-wrapper.properties"))) {
       wrapper.load(input);
+    }
+    URI distributionUrl = URI.create(wrapper.getProperty("distributionUrl"));
+    if (Files.isRegularFile(isolated.resolve("init.gradle"), LinkOption.NOFOLLOW_LINKS)) {
+      cachedDistribution(isolated, distributionUrl);
+      return isolated;
     }
     String archive =
         Path.of(URI.create(wrapper.getProperty("distributionUrl")).getPath())
             .getFileName()
             .toString();
     String distribution = archive.substring(0, archive.length() - ".zip".length());
-    Path distributionRoot = source.resolve("wrapper/dists").resolve(distribution);
-    Path cachedDistribution;
-    try (var hashes = Files.list(distributionRoot)) {
-      cachedDistribution =
-          hashes
-              .filter(
-                  path ->
-                      Files.isRegularFile(path.resolve(archive + ".ok"), LinkOption.NOFOLLOW_LINKS))
-              .findFirst()
-              .orElseThrow(
-                  () ->
-                      new IOException(
-                          "The learner wrapper distribution must be cached for offline tests."));
-    }
+    Path cachedDistribution = cachedDistribution(source, distributionUrl);
     Path targetDistribution =
         isolated
             .resolve("wrapper/dists")
@@ -252,6 +248,43 @@ public final class LearnerJourneyFixture {
         }
         """);
     return isolated;
+  }
+
+  static Path cachedDistribution(Path source, URI distributionUrl) throws IOException {
+    String archive = Path.of(distributionUrl.getPath()).getFileName().toString();
+    String distribution = archive.substring(0, archive.length() - ".zip".length());
+    String hash;
+    try {
+      // Match Gradle Download.safeUri and PathAssembler; MD5 identifies a cache, not trust.
+      URI safe =
+          new URI(
+              distributionUrl.getScheme(),
+              null,
+              distributionUrl.getHost(),
+              distributionUrl.getPort(),
+              distributionUrl.getPath(),
+              distributionUrl.getQuery(),
+              distributionUrl.getFragment());
+      byte[] digest =
+          MessageDigest.getInstance("MD5")
+              .digest(safe.toASCIIString().getBytes(StandardCharsets.UTF_8));
+      hash = new BigInteger(1, digest).toString(36);
+    } catch (URISyntaxException | NoSuchAlgorithmException failure) {
+      throw new IOException(
+          "Cannot derive the learner wrapper's distribution cache identity.", failure);
+    }
+    Path selected = source.resolve("wrapper/dists").resolve(distribution).resolve(hash);
+    if (!Files.isDirectory(selected, LinkOption.NOFOLLOW_LINKS)
+        || !Files.isRegularFile(selected.resolve(archive + ".ok"), LinkOption.NOFOLLOW_LINKS)
+        || !Files.isDirectory(
+            selected.resolve(distribution.replaceFirst("-(bin|all)$", "")),
+            LinkOption.NOFOLLOW_LINKS)) {
+      throw new IOException(
+          "Expected the exact cached Gradle distribution "
+              + hash
+              + " with its completion marker and payload before launching the offline learner wrapper.");
+    }
+    return selected;
   }
 
   private static Path cachedGradleHome() {
