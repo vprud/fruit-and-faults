@@ -54,6 +54,23 @@ Unknown property keys, missing resources, malformed text, invalid values, and
 unsupported versions fail before a course is returned. Errors identify the
 affected resource or property and advise restoring the installed bundle.
 
-The initial four-lesson metadata bundle intentionally declares no production
-assets. Starter source, visible tests, build resources, and exact artifact
-declarations are added by the subsequent learner asset task.
+The installed four-lesson bundle discloses one cumulative Java 26 project.
+Lesson 1 contains the build and reused Gradle wrapper, publishing guide,
+starter source, and starter test. Lesson 2 adds coordinate movement, lesson 3
+adds board boundaries, and lesson 4 adds game state. Every asset declares its
+SHA-256, and future lesson assets are never part of an earlier disclosure.
+Visible tests use `IMMUTABLE_CHECK`, except the lesson 3 analogous boundary
+test, which is the only `EDITABLE_TEMPLATE`. Build files and source scaffolds
+use `LEARNER_SCAFFOLD`. Passing learner implementations live only in test
+resources, outside the installed course bundle.
+
+Lesson 1's public contract is `Starter.message()`, returning `Ready to play.`.
+Its sole intentional compilation error is the missing semicolon after the
+return expression on line 9 of `src/main/java/org/fruitandfaults/game/Starter.java`.
+Adding that semicolon is the minimal repair and allows the immutable starter
+test to run. Later calculation scaffolds compile but throw an explicit
+`UnsupportedOperationException` until the learner implements each exercise.
+
+The learner build selects the Java 26 toolchain and JUnit Jupiter 6.0.1.
+Wrapper distribution, JUnit dependencies, and Java 26 must be available locally
+before an offline build; the learner settings do not auto-download a toolchain.
