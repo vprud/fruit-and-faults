@@ -1,0 +1,6 @@
+> Task :compileTestJava FAILED
+C:\Game with spaces\src\test\java\org\fruitandfaults\game\MovementTest.java:12: error: ';' expected
+1 error
+
+Execution failed for task ':compileTestJava'.
+> Compilation failed; see the compiler output below.

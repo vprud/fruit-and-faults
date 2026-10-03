@@ -1,0 +1,4 @@
+Something went wrong: error: cannot find symbol
+org.opentest4j.AssertionFailedError
+SECRET_TOKEN=do-not-display
+BUILD FAILED

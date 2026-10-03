@@ -1,0 +1,9 @@
+> Task :compileJava FAILED
+/workspace/Игра with spaces/src/main/java/org/fruitandfaults/game/Starter.java:7: error: cannot find symbol
+    return greeting;
+           ^
+  symbol: variable greeting
+1 error
+
+Execution failed for task ':compileJava'.
+> Compilation failed; see the compiler output below.
