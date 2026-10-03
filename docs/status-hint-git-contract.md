@@ -18,7 +18,11 @@ configuration includes, external attribute files, and executable filter
 configuration. Nested repositories and submodules are intentionally unsupported
 in the Phase A workspace and produce a workspace diagnostic before Git runs.
 Case-ambiguous Git metadata is rejected on filesystems where it aliases the
-reserved names. Inspection disables global/system configuration and attributes,
+reserved names. Both local configuration files are read through an anchored
+`.git` directory handle under a 64 KiB limit before any Git process starts. A
+conservative scanner rejects filters, includes, external attribute files,
+worktree configuration, continuations, and ambiguous bytes without opening any
+referenced path. Inspection disables global/system configuration and attributes,
 fsmonitor hooks, optional locks, and lazy fetching, and allows no remote transport
 protocols.
 Every command is a literal argument list with a finite deadline and output cap.

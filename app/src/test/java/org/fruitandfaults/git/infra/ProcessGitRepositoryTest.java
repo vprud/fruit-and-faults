@@ -143,7 +143,8 @@ class ProcessGitRepositoryTest {
       throws IOException {
     new ProcessGitRepository().initialize(root);
     Path outside = temporary.toRealPath().resolve("outside-config");
-    Files.writeString(outside, "[core]\n\tbare = false\n");
+    String outsideBytes = "malformed" + (char) 1;
+    Files.writeString(outside, outsideBytes);
     switch (invalid) {
       case "config-symlink" -> {
         Files.move(root.resolve(".git/config"), temporary.toRealPath().resolve("retained-config"));
@@ -165,6 +166,9 @@ class ProcessGitRepositoryTest {
             4096,
             command -> {
               throw new AssertionError("Unsafe repository reached Git process launch");
+            },
+            request -> {
+              throw new AssertionError("Unsafe repository reached read-only Git process launch");
             });
     assertThrows(IOException.class, () -> git.requireInitialized(root));
     org.junit.jupiter.api.Assertions.assertArrayEquals(before, Files.readAllBytes(outside));
@@ -173,18 +177,12 @@ class ProcessGitRepositoryTest {
   @Test
   void repositoryProbePassesEachReadOnlyArgumentSeparately() throws IOException {
     new ProcessGitRepository().initialize(root);
-    AtomicBoolean inspectedConfiguration = new AtomicBoolean();
     ProcessGitRepository git =
         new ProcessGitRepository(
             Duration.ofSeconds(1),
             4096,
             command -> new FakeProcess("", 0),
             request -> {
-              if (request.arguments().contains("--get-regexp")) {
-                inspectedConfiguration.set(true);
-                return new org.fruitandfaults.validation.application.ProcessResult.Exited(
-                    1, org.fruitandfaults.validation.application.ProcessResult.Output.empty());
-              }
               assertEquals(
                   List.of(
                       "git",
@@ -201,7 +199,6 @@ class ProcessGitRepositoryTest {
                       root.resolve(".git") + "\n" + root + "\ntrue\n", "", false, false));
             });
     git.requireInitialized(root);
-    assertTrue(inspectedConfiguration.get());
   }
 
   @Test
@@ -210,10 +207,12 @@ class ProcessGitRepositoryTest {
     Path pidFile = root.resolve("child.pid");
     ProcessGitRepository git = repositoryUsingFixture(pidFile, Duration.ofMillis(250));
 
-    GitInitializationException failed =
-        assertThrows(GitInitializationException.class, () -> git.requireInitialized(root));
+    IOException failed = assertThrows(IOException.class, () -> git.requireInitialized(root));
 
-    assertEquals(GitInitializationException.Reason.TIMEOUT, failed.reason());
+    assertEquals(
+        GitInitializationException.Reason.TIMEOUT,
+        ((GitInitializationException) java.util.Objects.requireNonNull(failed.getCause()))
+            .reason());
     assertFalse(
         ProcessHandle.of(Long.parseLong(Files.readString(pidFile)))
             .map(ProcessHandle::isAlive)
@@ -245,10 +244,13 @@ class ProcessGitRepositoryTest {
     caller.join(TimeUnit.SECONDS.toMillis(5));
 
     assertFalse(caller.isAlive());
-    assertTrue(failure.get() instanceof GitInitializationException);
+    assertTrue(failure.get() instanceof IOException);
     assertEquals(
         GitInitializationException.Reason.INTERRUPTED,
-        ((GitInitializationException) java.util.Objects.requireNonNull(failure.get())).reason());
+        ((GitInitializationException)
+                java.util.Objects.requireNonNull(
+                    java.util.Objects.requireNonNull(failure.get()).getCause()))
+            .reason());
     assertTrue(interrupted.get());
     assertFalse(child.isAlive());
   }
@@ -311,6 +313,69 @@ class ProcessGitRepositoryTest {
     assertThrows(IOException.class, () -> git.requireInitialized(root));
     assertEquals(content, Files.readString(target));
     assertEquals("[core]\n\tbare = false\n", Files.readString(outside));
+  }
+
+  @Test
+  void rejectsConditionalIncludeWithoutReadingItsExternalTargetOrLaunchingGit() throws IOException {
+    new ProcessGitRepository().initialize(root);
+    Path external = Files.createDirectory(temporary.resolve("read-observable-external-config"));
+    Files.writeString(
+        root.resolve(".git/config"),
+        "\n[InClUdEIf \"gitdir:**\"] path = \"" + external + "\"\n",
+        StandardOpenOption.APPEND);
+
+    assertConfigurationRejectedBeforeGit();
+    assertTrue(Files.isDirectory(external));
+  }
+
+  @Test
+  void rejectsWorktreeFilterConfigurationEvenWhenStoredSeparately() throws IOException {
+    new ProcessGitRepository().initialize(root);
+    Files.writeString(
+        root.resolve(".git/config"),
+        "\n[extensions] worktreeConfig = true\n",
+        StandardOpenOption.APPEND);
+    Files.writeString(
+        root.resolve(".git/config.worktree"), "[ FiLtEr \"evil\" ] process = ignored\n");
+
+    assertConfigurationRejectedBeforeGit();
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "# filter command hidden in a comment\n",
+        "[core]\n\tattributesFile = /outside\n",
+        "[core]\n\tignored = fi\\\nlter\n"
+      })
+  void conservativeConfigurationScannerRejectsCommentsWhitespaceContinuationsAndControls(
+      String content) throws IOException {
+    new ProcessGitRepository().initialize(root);
+    Files.writeString(root.resolve(".git/config.worktree"), content);
+
+    assertConfigurationRejectedBeforeGit();
+  }
+
+  @Test
+  void conservativeConfigurationScannerRejectsControlBytes() throws IOException {
+    new ProcessGitRepository().initialize(root);
+    Files.writeString(root.resolve(".git/config.worktree"), "[core]\nignored=value" + (char) 1);
+
+    assertConfigurationRejectedBeforeGit();
+  }
+
+  private void assertConfigurationRejectedBeforeGit() {
+    ProcessGitRepository guarded =
+        new ProcessGitRepository(
+            Duration.ofSeconds(1),
+            4096,
+            command -> {
+              throw new AssertionError("Unsafe configuration reached initialization Git");
+            },
+            request -> {
+              throw new AssertionError("Unsafe configuration reached read-only Git");
+            });
+    assertThrows(IOException.class, () -> guarded.requireInitialized(root));
   }
 
   @ParameterizedTest
