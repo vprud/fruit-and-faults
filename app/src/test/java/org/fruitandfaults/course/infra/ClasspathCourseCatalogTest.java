@@ -42,7 +42,7 @@ class ClasspathCourseCatalogTest {
       assertFalse(lesson.instructions().isBlank());
       assertFalse(lesson.goal().isBlank());
       assertFalse(lesson.completionCriteria().isEmpty());
-      assertTrue(lesson.assets().isEmpty(), "Task 6 supplies production assets");
+      assertFalse(lesson.assets().isEmpty(), "Every installed lesson discloses its own assets");
       assertTrue(
           lesson.question().options().stream()
               .anyMatch(option -> option.id().equals(lesson.question().correctOptionId())));

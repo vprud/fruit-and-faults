@@ -109,6 +109,11 @@ jacoco {
 
 tasks.jacocoTestReport {
     dependsOn(tasks.test)
+    classDirectories.setFrom(
+        sourceSets.main
+            .get()
+            .output.classesDirs,
+    )
     reports {
         html.required = true
         xml.required = true
@@ -117,6 +122,11 @@ tasks.jacocoTestReport {
 
 tasks.jacocoTestCoverageVerification {
     dependsOn(tasks.test)
+    classDirectories.setFrom(
+        sourceSets.main
+            .get()
+            .output.classesDirs,
+    )
     violationRules {
         rule {
             limit {
