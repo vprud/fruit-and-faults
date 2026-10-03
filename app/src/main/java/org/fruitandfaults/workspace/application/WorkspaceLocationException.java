@@ -35,6 +35,8 @@ public final class WorkspaceLocationException extends IOException {
     AMBIGUOUS,
     /** The course identity or layout is unsupported. */
     INCOMPATIBLE,
+    /** Marker or path inspection was cancelled; the thread interrupt remains set. */
+    INTERRUPTED,
     /** Symlink, malformed marker, or unsafe directory access. */
     UNSAFE
   }

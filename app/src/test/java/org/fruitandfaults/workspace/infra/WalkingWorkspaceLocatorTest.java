@@ -2,13 +2,16 @@ package org.fruitandfaults.workspace.infra;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Optional;
 
 import org.fruitandfaults.course.domain.CourseId;
 import org.fruitandfaults.workspace.application.WorkspaceLocationException;
+import org.fruitandfaults.workspace.application.WorkspaceSetup;
 import org.fruitandfaults.workspace.domain.WorkspaceMetadata;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,6 +45,55 @@ class WalkingWorkspaceLocatorTest {
     assertEquals(
         WorkspaceLocationException.Reason.NOT_FOUND,
         assertThrows(WorkspaceLocationException.class, () -> locator.locate(root)).reason());
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"closed", "io", "cause", "flag"})
+  void interruptedMarkerReadIsCancellationNotUnsafeAndPreservesMarker(String kind)
+      throws IOException {
+    marker(root, "courseId=fixture\nlayoutVersion=1\n");
+    Path marker = root.resolve(".fruit-and-faults/workspace.properties");
+    byte[] before = Files.readAllBytes(marker);
+    var interrupted =
+        new WalkingWorkspaceLocator(
+            expected,
+            new WorkspaceSetup() {
+              @Override
+              public Destination inspect(Path target) {
+                throw new AssertionError("Discovery is read-only");
+              }
+
+              @Override
+              public Optional<WorkspaceMetadata> loadMetadata(Path selected) throws IOException {
+                if (kind.equals("flag")) Thread.currentThread().interrupt();
+                throw switch (kind) {
+                  case "closed" -> new java.nio.channels.ClosedByInterruptException();
+                  case "io" -> new java.io.InterruptedIOException("PRIVATE");
+                  case "cause" -> new IOException(new java.io.InterruptedIOException("PRIVATE"));
+                  default -> new IOException("PRIVATE");
+                };
+              }
+
+              @Override
+              public void createDirectory(Path target) {
+                throw new AssertionError("Discovery must not write");
+              }
+
+              @Override
+              public void createMetadata(Path selected, WorkspaceMetadata metadata) {
+                throw new AssertionError("Discovery must not write");
+              }
+            });
+    try {
+      var failure = assertThrows(WorkspaceLocationException.class, () -> interrupted.locate(root));
+      assertEquals("INTERRUPTED", failure.reason().name());
+      assertTrue(Thread.currentThread().isInterrupted());
+      assertTrue(java.util.Objects.requireNonNull(failure.getMessage()).contains("interrupted"));
+      Thread.interrupted();
+      org.junit.jupiter.api.Assertions.assertArrayEquals(before, Files.readAllBytes(marker));
+    } finally {
+      Thread.interrupted();
+    }
   }
 
   @Test

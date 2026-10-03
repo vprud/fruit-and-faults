@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
+import org.fruitandfaults.workspace.application.WorkspaceCancellation;
 import org.fruitandfaults.workspace.application.WorkspaceLocationException;
 import org.fruitandfaults.workspace.application.WorkspaceLocator;
 import org.fruitandfaults.workspace.application.WorkspaceRoot;
@@ -35,6 +36,7 @@ public final class WalkingWorkspaceLocator implements WorkspaceLocator {
   public WorkspaceRoot locate(Path current) throws IOException {
     List<WorkspaceRoot> found = new ArrayList<>();
     try {
+      if (WorkspaceCancellation.restoreIfInterrupted(null)) throw interrupted();
       Path normalized = SafeWorkspaceSetup.safePath(current);
       if (!Files.isDirectory(normalized, LinkOption.NOFOLLOW_LINKS)) {
         throw new IOException("Current directory does not exist.");
@@ -43,6 +45,7 @@ public final class WalkingWorkspaceLocator implements WorkspaceLocator {
           candidate != null;
           candidate = candidate.getParent()) {
         var metadata = setup.loadMetadata(candidate);
+        if (WorkspaceCancellation.restoreIfInterrupted(null)) throw interrupted();
         if (metadata.isPresent()) {
           if (!metadata.orElseThrow().equals(expected)) {
             throw new WorkspaceLocationException(
@@ -53,8 +56,10 @@ public final class WalkingWorkspaceLocator implements WorkspaceLocator {
         }
       }
     } catch (WorkspaceLocationException failure) {
+      if (WorkspaceCancellation.restoreIfInterrupted(failure)) throw interrupted();
       throw failure;
     } catch (IOException unsafe) {
+      if (WorkspaceCancellation.restoreIfInterrupted(unsafe)) throw interrupted();
       throw new WorkspaceLocationException(
           WorkspaceLocationException.Reason.UNSAFE,
           "Workspace path or marker is unsafe or invalid; inspect its real directories and metadata.");
@@ -70,5 +75,11 @@ public final class WalkingWorkspaceLocator implements WorkspaceLocator {
           "Nested workspace markers are ambiguous; move the nested workspace to a separate location.");
     }
     return found.getFirst();
+  }
+
+  private static WorkspaceLocationException interrupted() {
+    return new WorkspaceLocationException(
+        WorkspaceLocationException.Reason.INTERRUPTED,
+        "Workspace discovery was interrupted; preserve the workspace and retry when ready.");
   }
 }

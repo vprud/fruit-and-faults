@@ -80,6 +80,141 @@ class StartCourseTest {
     assertTrue(Files.notExists(target));
   }
 
+  @Test
+  void preexistingCancellationStopsMissingDestinationBeforeAnyMutation() {
+    try {
+      Thread.currentThread().interrupt();
+      var failure =
+          assertInstanceOf(
+              StartResult.Failed.class,
+              start(catalog, files, new ProcessGitRepository())
+                  .execute(new StartRequest(target, true)));
+      assertEquals(FailureCategory.INTERRUPTED, failure.category());
+      assertTrue(Thread.currentThread().isInterrupted());
+      assertTrue(Files.notExists(target));
+      assertTrue(failure.diagnostic().contains("interrupted"));
+      assertFalse(failure.diagnostic().contains("unsafe"));
+    } finally {
+      Thread.interrupted();
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"preflight", "metadata", "progress", "journal", "manifest"})
+  void interruptedPreflightAndResumeReadsPreserveExistingState(String boundary) throws IOException {
+    boolean existing = !boundary.equals("preflight");
+    if (existing)
+      assertInstanceOf(
+          StartResult.Created.class,
+          start(catalog, files, new ProcessGitRepository())
+              .execute(new StartRequest(target, true)));
+    byte[] before =
+        existing
+            ? Files.readAllBytes(target.resolve(".fruit-and-faults/progress.json"))
+            : new byte[0];
+    var setup = new SafeWorkspaceSetup();
+    var cancelledSetup =
+        new WorkspaceSetup() {
+          @Override
+          public Destination inspect(Path selected) throws IOException {
+            if (boundary.equals("preflight") || boundary.equals("metadata"))
+              throw new IOException(new java.nio.channels.ClosedByInterruptException());
+            return setup.inspect(selected);
+          }
+
+          @Override
+          public Optional<org.fruitandfaults.workspace.domain.WorkspaceMetadata> loadMetadata(
+              Path selected) throws IOException {
+            return setup.loadMetadata(selected);
+          }
+
+          @Override
+          public void createDirectory(Path selected) {
+            throw new AssertionError("Cancelled start must not create directories");
+          }
+
+          @Override
+          public void createMetadata(
+              Path selected, org.fruitandfaults.workspace.domain.WorkspaceMetadata metadata) {
+            throw new AssertionError("Cancelled start must not write metadata");
+          }
+        };
+    ProgressRepository cancelledProgress =
+        new ProgressRepository() {
+          @Override
+          public Optional<CourseProgress> load(Path selected) throws IOException {
+            if (boundary.equals("progress")) throw new java.io.InterruptedIOException("PRIVATE");
+            return progress.load(selected);
+          }
+
+          @Override
+          public void save(Path selected, CourseProgress current) {
+            throw new AssertionError("Cancelled start must not write progress");
+          }
+        };
+    TransitionJournalRepository cancelledJournals =
+        new TransitionJournalRepository() {
+          @Override
+          public Optional<org.fruitandfaults.workspace.domain.TransitionJournal> load(Path selected)
+              throws IOException {
+            if (boundary.equals("journal"))
+              throw new java.nio.channels.ClosedByInterruptException();
+            return journals.load(selected);
+          }
+
+          @Override
+          public void create(
+              Path selected, org.fruitandfaults.workspace.domain.TransitionJournal journal) {
+            throw new AssertionError("Cancelled start must not write journals");
+          }
+
+          @Override
+          public void remove(
+              Path selected, org.fruitandfaults.workspace.domain.TransitionJournal journal) {
+            throw new AssertionError("Cancelled start must not delete journals");
+          }
+        };
+    ManagedFilesRepository cancelledManifests =
+        new ManagedFilesRepository() {
+          @Override
+          public Optional<ManagedFiles> load(Path selected) throws IOException {
+            if (boundary.equals("manifest")) throw new java.io.InterruptedIOException("PRIVATE");
+            return manifests.load(selected);
+          }
+
+          @Override
+          public void save(Path selected, ManagedFiles managed) {
+            throw new AssertionError("Cancelled start must not write manifests");
+          }
+        };
+    var useCase =
+        new StartCourse(
+            course,
+            cancelledSetup,
+            new DiscloseLesson(catalog, files, manifests, progress, journals),
+            cancelledProgress,
+            cancelledManifests,
+            cancelledJournals,
+            new ProcessGitRepository());
+    try {
+      var failure =
+          assertInstanceOf(
+              StartResult.Failed.class, useCase.execute(new StartRequest(target, true)));
+      assertEquals(FailureCategory.INTERRUPTED, failure.category());
+      assertTrue(Thread.currentThread().isInterrupted());
+      assertTrue(failure.diagnostic().contains("interrupted"));
+      assertFalse(failure.diagnostic().contains("unsafe"));
+      assertFalse(failure.diagnostic().contains("PRIVATE"));
+      Thread.interrupted();
+      if (existing)
+        assertArrayEquals(
+            before, Files.readAllBytes(target.resolve(".fruit-and-faults/progress.json")));
+      else assertTrue(Files.notExists(target));
+    } finally {
+      Thread.interrupted();
+    }
+  }
+
   @ParameterizedTest
   @ValueSource(booleans = {false, true})
   void initializesMissingOrEmptyDirectoryWithOnlyFirstLessonAndNoOpeningRevision(boolean existing)

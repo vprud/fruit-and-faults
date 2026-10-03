@@ -71,6 +71,15 @@ bounded to 256 characters, and reflection interaction stops after 32 steps.
 Color is emitted only for an actual/injected interactive terminal and disabled
 by `--no-color`.
 
+Cancellation during workspace discovery, start preparation/resume, or saved-state
+reads is not an unsafe-workspace diagnosis. Direct or wrapped interrupted I/O,
+closed-by-interrupt channels, and an already-set interrupt flag retain/restore
+the flag and return code 5 with retry/cancellation guidance. No new initialization
+or hint write starts after preexisting cancellation. The CLI defensively maps a
+failed use-case result to cancellation when its thread remains interrupted;
+an already completed successful result keeps code 0. Interactive cancellation
+does not offer a retry/confirmation prompt or read further input.
+
 Start prints the active lesson and first-commit/public-GitHub instructions.
 GitHub remains optional and never causes network access or CLI authentication.
 `status` reports cheap artifact presence, hint level, local Git facts, remote

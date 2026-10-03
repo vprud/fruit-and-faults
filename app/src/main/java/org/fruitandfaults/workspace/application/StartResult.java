@@ -84,8 +84,10 @@ public sealed interface StartResult {
     }
   }
 
-  /** Last attempted mutation, distinguishing which state may already exist. */
+  /** Last attempted operation, distinguishing which state may already exist. */
   enum Stage {
+    /** Read-only destination, marker, and saved-state inspection before any mutation. */
+    WORKSPACE_INSPECTION,
     /** Creation of the chosen destination. */
     DIRECTORY_CREATION,
     /** Git init, before any course-owned state is created. */

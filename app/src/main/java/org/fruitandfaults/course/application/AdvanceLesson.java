@@ -26,6 +26,7 @@ import org.fruitandfaults.workspace.application.DiscloseLesson;
 import org.fruitandfaults.workspace.application.DisclosureResult;
 import org.fruitandfaults.workspace.application.ManagedFilesRepository;
 import org.fruitandfaults.workspace.application.TransitionJournalRepository;
+import org.fruitandfaults.workspace.application.WorkspaceCancellation;
 import org.fruitandfaults.workspace.domain.DisclosureConflict;
 import org.fruitandfaults.workspace.domain.DisclosurePlan;
 import org.fruitandfaults.workspace.domain.ManagedFiles;
@@ -176,7 +177,10 @@ public final class AdvanceLesson {
             case EXIT_FAILURE, UNAVAILABLE -> FailureCategory.WORKSPACE_CONFLICT;
           });
     } catch (IOException | IllegalArgumentException failed) {
-      return unavailable(FailureCategory.WORKSPACE_CONFLICT);
+      return unavailable(
+          WorkspaceCancellation.restoreIfInterrupted(failed)
+              ? FailureCategory.INTERRUPTED
+              : FailureCategory.WORKSPACE_CONFLICT);
     } catch (RuntimeException failed) {
       return unavailable(FailureCategory.INTERNAL_ERROR);
     }
@@ -327,6 +331,8 @@ public final class AdvanceLesson {
               default ->
                   "Progress, ownership, Git, preview, or disclosure state was unavailable or unsafe.";
             },
-            "Preserve the workspace and pending journal, inspect local state, then retry next."));
+            category == FailureCategory.INTERRUPTED
+                ? "Preserve existing files, progress, and pending journal; retry next when ready."
+                : "Preserve the workspace and pending journal, inspect local state, then retry next."));
   }
 }
