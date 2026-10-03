@@ -12,6 +12,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -21,6 +22,8 @@ import org.fruitandfaults.git.application.GitInitializationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class ProcessGitRepositoryTest {
   @TempDir private Path temporary;
@@ -35,6 +38,7 @@ class ProcessGitRepositoryTest {
   void initializesRealRepositoryWithoutStagingCommittingOrRemoteMutation() throws IOException {
     Files.writeString(root.resolve("learner.txt"), "keep");
     new ProcessGitRepository().initialize(root);
+    new ProcessGitRepository().requireInitialized(root);
     assertTrue(Files.isDirectory(root.resolve(".git")));
     assertTrue(LearnerJourneyFixture.runGit(root, "ls-files").isBlank());
     assertTrue(LearnerJourneyFixture.runGit(root, "remote").isBlank());
@@ -126,6 +130,64 @@ class ProcessGitRepositoryTest {
     try (var entries = Files.list(outside)) {
       assertEquals(0L, entries.count());
     }
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"config-symlink", "config-include", "object-alternates"})
+  void rejectsRepositoryPathsThatCouldReadOutsideBeforeLaunchingGit(String invalid)
+      throws IOException {
+    new ProcessGitRepository().initialize(root);
+    Path outside = temporary.toRealPath().resolve("outside-config");
+    Files.writeString(outside, "[core]\n\tbare = false\n");
+    switch (invalid) {
+      case "config-symlink" -> {
+        Files.move(root.resolve(".git/config"), temporary.toRealPath().resolve("retained-config"));
+        Files.createSymbolicLink(root.resolve(".git/config"), outside);
+      }
+      case "config-include" ->
+          Files.writeString(
+              root.resolve(".git/config"),
+              "\n[include]\n\tpath = \"" + outside + "\"\n",
+              StandardOpenOption.APPEND);
+      case "object-alternates" ->
+          Files.writeString(root.resolve(".git/objects/info/alternates"), outside.toString());
+      default -> throw new IllegalArgumentException("Unknown unsafe Git fixture");
+    }
+    byte[] before = Files.readAllBytes(outside);
+    ProcessGitRepository git =
+        new ProcessGitRepository(
+            Duration.ofSeconds(1),
+            4096,
+            command -> {
+              throw new AssertionError("Unsafe repository reached Git process launch");
+            });
+    assertThrows(IOException.class, () -> git.requireInitialized(root));
+    org.junit.jupiter.api.Assertions.assertArrayEquals(before, Files.readAllBytes(outside));
+  }
+
+  @Test
+  void repositoryProbePassesEachReadOnlyArgumentSeparately() throws IOException {
+    new ProcessGitRepository().initialize(root);
+    FakeProcess process = new FakeProcess(root.resolve(".git") + "\n" + root + "\ntrue\n", 0);
+    ProcessGitRepository git =
+        new ProcessGitRepository(
+            Duration.ofSeconds(1),
+            4096,
+            command -> {
+              assertEquals(
+                  List.of(
+                      "git",
+                      "-C",
+                      root.toString(),
+                      "rev-parse",
+                      "--absolute-git-dir",
+                      "--show-toplevel",
+                      "--is-inside-work-tree"),
+                  command);
+              return process;
+            });
+    git.requireInitialized(root);
+    assertTrue(process.closed);
   }
 
   private static final class FakeProcess extends Process {

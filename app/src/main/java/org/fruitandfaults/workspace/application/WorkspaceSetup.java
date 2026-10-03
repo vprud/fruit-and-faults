@@ -70,7 +70,8 @@ public interface WorkspaceSetup {
   record Empty(Path root) implements Destination {}
 
   /**
-   * A safely inspected initialized destination.
+   * A safely inspected marker-bearing destination. The caller must validate its Git repository
+   * before treating it as an initialized workspace.
    *
    * @param workspace existing workspace with validated identity
    */

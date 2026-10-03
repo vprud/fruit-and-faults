@@ -84,6 +84,11 @@ public final class StartCourse {
               "Workspace courseId or layoutVersion is incompatible; use the matching installation.",
               List.of(root.resolve(".fruit-and-faults/workspace.properties")));
         }
+        try {
+          git.requireInitialized(root);
+        } catch (IOException invalidGit) {
+          return invalidRepository(root);
+        }
         return resume(request, initialized.workspace());
       }
       List<Path> invalid = invalidAssetPaths(root);
@@ -191,6 +196,11 @@ public final class StartCourse {
             "Workspace identity changed after preview; inspect it before recovery.",
             List.of(root.resolve(".fruit-and-faults/workspace.properties")));
       }
+      try {
+        git.requireInitialized(root);
+      } catch (IOException invalidGit) {
+        return invalidRepository(root);
+      }
       DisclosureResult applied =
           pending.isPresent()
               ? disclosure.recover(root)
@@ -261,6 +271,13 @@ public final class StartCourse {
 
   private static StartResult.Conflict conflict(Path root, String diagnostic, List<Path> paths) {
     return new StartResult.Conflict(root, diagnostic, paths);
+  }
+
+  private static StartResult.Conflict invalidRepository(Path root) {
+    return conflict(
+        root,
+        "Expected a safe existing Git repository rooted at this workspace's .git directory; preserve the workspace and restore the correct repository before retrying.",
+        List.of(root.resolve(".git")));
   }
 
   private static StartResult.Failed failure(Path root, StartResult.Stage stage, Exception failed) {

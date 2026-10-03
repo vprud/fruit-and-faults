@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -143,14 +144,99 @@ class StartCourseTest {
             start(
                     catalog,
                     files,
-                    root -> {
-                      throw new IOException("Must not reinitialize Git");
-                    })
+                    initializationOnly(
+                        root -> {
+                          throw new IOException("Must not reinitialize Git");
+                        }))
                 .execute(new StartRequest(target, false)));
     assertEquals(hinted, resumed.progress());
     assertEquals("learner implementation", Files.readString(target.resolve("src/Scaffold.txt")));
     assertArrayEquals(
         before, Files.readAllBytes(target.resolve(".fruit-and-faults/progress.json")));
+  }
+
+  @Test
+  void markerAloneCannotAuthorizeDisclosureOrGitRepair() throws IOException {
+    Files.createDirectory(target);
+    new SafeWorkspaceSetup()
+        .createMetadata(
+            target, new org.fruitandfaults.workspace.domain.WorkspaceMetadata(course.id(), 1));
+    byte[] marker = Files.readAllBytes(target.resolve(".fruit-and-faults/workspace.properties"));
+    assertInstanceOf(
+        StartResult.Conflict.class,
+        start(catalog, files, new ProcessGitRepository()).execute(new StartRequest(target, true)));
+    assertTrue(Files.notExists(target.resolve(".git")));
+    assertTrue(Files.notExists(target.resolve("src")));
+    assertTrue(progress.load(target).isEmpty());
+    assertTrue(manifests.load(target).isEmpty());
+    assertTrue(journals.load(target).isEmpty());
+    assertArrayEquals(
+        marker, Files.readAllBytes(target.resolve(".fruit-and-faults/workspace.properties")));
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "missing",
+        "file",
+        "symlink",
+        "empty",
+        "config-symlink",
+        "redirected-worktree",
+        "bare",
+        "commondir"
+      })
+  void rejectsUnsafeRepositoryWhenResumingCommittedWorkspaceWithoutStateMutation(String invalid)
+      throws IOException {
+    StartCourse useCase = start(catalog, files, new ProcessGitRepository());
+    assertInstanceOf(StartResult.Created.class, useCase.execute(new StartRequest(target, true)));
+    Files.writeString(target.resolve("src/Scaffold.txt"), "learner implementation");
+    byte[] state = Files.readAllBytes(target.resolve(".fruit-and-faults/progress.json"));
+    byte[] ownership = Files.readAllBytes(target.resolve(".fruit-and-faults/managed-files.json"));
+    makeRepositoryUnsafe(invalid);
+    assertInstanceOf(StartResult.Conflict.class, useCase.execute(new StartRequest(target, true)));
+    assertArrayEquals(state, Files.readAllBytes(target.resolve(".fruit-and-faults/progress.json")));
+    assertArrayEquals(
+        ownership, Files.readAllBytes(target.resolve(".fruit-and-faults/managed-files.json")));
+    assertEquals("learner implementation", Files.readString(target.resolve("src/Scaffold.txt")));
+    assertTrue(journals.load(target).isEmpty());
+    if (invalid.equals("missing")) {
+      assertTrue(Files.notExists(target.resolve(".git")));
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "missing",
+        "file",
+        "symlink",
+        "empty",
+        "config-symlink",
+        "redirected-worktree",
+        "bare",
+        "commondir"
+      })
+  void rejectsUnsafeRepositoryBeforeRecoveringPendingDisclosure(String invalid) throws IOException {
+    assertInstanceOf(
+        StartResult.Failed.class,
+        start(catalog, new FailingFiles(files), new ProcessGitRepository())
+            .execute(new StartRequest(target, true)));
+    byte[] pending = Files.readAllBytes(target.resolve(".fruit-and-faults/transition.json"));
+    byte[] learnerFile = Files.readAllBytes(target.resolve("src/Raw.txt"));
+    makeRepositoryUnsafe(invalid);
+    assertInstanceOf(
+        StartResult.Conflict.class,
+        start(catalog, files, new ProcessGitRepository()).execute(new StartRequest(target, true)));
+    assertArrayEquals(
+        pending, Files.readAllBytes(target.resolve(".fruit-and-faults/transition.json")));
+    assertArrayEquals(learnerFile, Files.readAllBytes(target.resolve("src/Raw.txt")));
+    assertTrue(Files.notExists(target.resolve("src/Template.txt")));
+    assertTrue(progress.load(target).isEmpty());
+    assertTrue(manifests.load(target).isEmpty());
+    if (invalid.equals("missing")) {
+      assertTrue(Files.notExists(target.resolve(".git")));
+    }
   }
 
   @ParameterizedTest
@@ -181,9 +267,10 @@ class StartCourseTest {
             start(
                     catalog,
                     files,
-                    root -> {
-                      throw new IOException("Git unavailable");
-                    })
+                    initializationOnly(
+                        root -> {
+                          throw new IOException("Git unavailable");
+                        }))
                 .execute(new StartRequest(target, true)));
     assertEquals(StartResult.Stage.GIT_INITIALIZATION, result.stage());
     assertTrue(Files.isDirectory(target));
@@ -199,12 +286,13 @@ class StartCourseTest {
             start(
                     catalog,
                     files,
-                    root -> {
-                      throw new GitInitializationException(
-                          GitInitializationException.Reason.EXIT_FAILURE,
-                          OptionalInt.of(23),
-                          "SECRET=token");
-                    })
+                    initializationOnly(
+                        root -> {
+                          throw new GitInitializationException(
+                              GitInitializationException.Reason.EXIT_FAILURE,
+                              OptionalInt.of(23),
+                              "SECRET=token");
+                        }))
                 .execute(new StartRequest(target, true)));
     assertTrue(result.diagnostic().contains("exit code 23"));
     assertFalse(result.diagnostic().contains("SECRET"));
@@ -320,6 +408,59 @@ class StartCourseTest {
         manifests,
         journals,
         git);
+  }
+
+  private static GitRepository initializationOnly(GitInitializer initialize) {
+    return new GitRepository() {
+      @Override
+      public void initialize(Path root) throws IOException {
+        initialize.initialize(root);
+      }
+
+      @Override
+      public void requireInitialized(Path root) throws IOException {
+        new ProcessGitRepository().requireInitialized(root);
+      }
+    };
+  }
+
+  @FunctionalInterface
+  private interface GitInitializer {
+    void initialize(Path root) throws IOException;
+  }
+
+  private void makeRepositoryUnsafe(String invalid) throws IOException {
+    Path gitDirectory = target.resolve(".git");
+    switch (invalid) {
+      case "missing", "file", "symlink", "empty" -> {
+        Path retained = temporary.toRealPath().resolve("retained-git");
+        Files.move(gitDirectory, retained);
+        switch (invalid) {
+          case "file" -> Files.writeString(gitDirectory, "gitdir: " + retained + "\n");
+          case "symlink" -> Files.createSymbolicLink(gitDirectory, retained);
+          case "empty" -> Files.createDirectory(gitDirectory);
+          default -> {}
+        }
+      }
+      case "config-symlink" -> {
+        Path retained = temporary.toRealPath().resolve("retained-config");
+        Files.move(gitDirectory.resolve("config"), retained);
+        Files.createSymbolicLink(gitDirectory.resolve("config"), retained);
+      }
+      case "redirected-worktree" ->
+          Files.writeString(
+              gitDirectory.resolve("config"),
+              "\n[core]\n\tworktree = ../..\n",
+              StandardOpenOption.APPEND);
+      case "bare" ->
+          Files.writeString(
+              gitDirectory.resolve("config"),
+              "\n[core]\n\tbare = true\n",
+              StandardOpenOption.APPEND);
+      case "commondir" ->
+          Files.writeString(gitDirectory.resolve("commondir"), temporary.toRealPath().toString());
+      default -> throw new IllegalArgumentException("Unknown repository fixture");
+    }
   }
 
   private static final class FailingFiles implements WorkspaceFiles {
