@@ -1,0 +1,6 @@
+FAILURE: Build failed with an exception.
+* Where:
+Build file '/workspace/build.gradle.kts' line: 2
+* What went wrong:
+Plugin [id: 'broken.plugin'] was not found in any of the following sources:
+BUILD FAILED

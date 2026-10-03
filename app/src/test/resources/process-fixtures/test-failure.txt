@@ -1,0 +1,7 @@
+CoordinateTest > movesUp() FAILED
+    org.opentest4j.AssertionFailedError at CoordinateTest.java:20
+
+4 tests completed, 1 failed
+> Task :test FAILED
+Execution failed for task ':test'.
+> There were failing tests. See the report at: file:///workspace/build/reports/tests/test/index.html
