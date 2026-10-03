@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
+
 import org.fruitandfaults.course.application.CourseCatalog;
 import org.fruitandfaults.course.domain.AssetId;
 import org.fruitandfaults.course.domain.AssetPolicy;
