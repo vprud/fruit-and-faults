@@ -3,13 +3,19 @@ package org.fruitandfaults.git.infra;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryStream;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.SecureDirectoryStream;
 import java.nio.file.SimpleFileVisitor;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -96,10 +102,8 @@ public final class ProcessGitRepository implements GitRepository {
             "Git repository redirects storage outside its local .git tree; preserve it and restore a self-contained repository.");
       }
     }
-    requireLocalConfiguration(gitDirectory.resolve("config"));
-    requireLocalConfiguration(gitDirectory.resolve("config.worktree"));
+    requireLocalConfigurations(gitDirectory);
     requireNoExecutableFilters(normalized);
-    requireNoExecutableLocalConfiguration(normalized);
     CommandOutput repository;
     try {
       repository =
@@ -462,46 +466,100 @@ public final class ProcessGitRepository implements GitRepository {
         });
   }
 
-  private static void requireLocalConfiguration(Path configuration) throws IOException {
-    if (Files.notExists(configuration, LinkOption.NOFOLLOW_LINKS)) {
-      return;
+  private static void requireLocalConfigurations(Path gitDirectory) throws IOException {
+    BasicFileAttributes expected =
+        Files.readAttributes(gitDirectory, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    Object expectedKey = expected.fileKey();
+    if (!expected.isDirectory() || expectedKey == null) {
+      throw unsafeInspection();
     }
-    byte[] bytes;
-    try (InputStream input = Files.newInputStream(configuration, LinkOption.NOFOLLOW_LINKS)) {
-      bytes = input.readNBytes(65_537);
+    try (DirectoryStream<Path> opened = Files.newDirectoryStream(gitDirectory)) {
+      if (!(opened instanceof SecureDirectoryStream<Path> secure)) {
+        throw new IOException("Git configuration inspection requires secure directory handles.");
+      }
+      BasicFileAttributeView view = secure.getFileAttributeView(BasicFileAttributeView.class);
+      if (view == null || !expectedKey.equals(view.readAttributes().fileKey())) {
+        throw unsafeInspection();
+      }
+      requireLocalConfiguration(secure, Path.of("config"));
+      requireLocalConfiguration(secure, Path.of("config.worktree"));
+      if (!expectedKey.equals(view.readAttributes().fileKey())) {
+        throw unsafeInspection();
+      }
     }
-    if (bytes.length > 65_536) {
-      throw new IOException("Git configuration exceeds the supported 64 KiB inspection limit.");
-    }
-    String text =
-        StandardCharsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString();
-    if (text.startsWith("\ufeff")) {
-      throw new IOException(
-          "Workspace Git configuration contains a UTF-8 BOM; preserve it and restore BOM-free local configuration.");
-    }
-    // Git's own parser performs semantic key inspection below; this pass rejects ambiguous bytes.
-    if (text.indexOf('\0') >= 0) {
-      throw new IOException("Workspace Git configuration contains unsupported NUL bytes.");
+    BasicFileAttributes retained =
+        Files.readAttributes(gitDirectory, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    if (!expectedKey.equals(retained.fileKey())) {
+      throw unsafeInspection();
     }
   }
 
-  private void requireNoExecutableLocalConfiguration(Path root) throws IOException {
-    CommandOutput unsafe =
-        probe(
-            root,
-            "config",
-            "--local",
-            "--no-includes",
-            "--null",
-            "--get-regexp",
-            "^(filter\\.|include\\.|core\\.attributesfile$)");
-    if (unsafe.exitCode() == 0) {
+  private static void requireLocalConfiguration(SecureDirectoryStream<Path> directory, Path name)
+      throws IOException {
+    BasicFileAttributes before;
+    try {
+      before =
+          directory
+              .getFileAttributeView(name, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
+              .readAttributes();
+    } catch (java.nio.file.NoSuchFileException absent) {
+      return;
+    }
+    Object key = before.fileKey();
+    if (!before.isRegularFile() || key == null || before.size() > 65_536) {
+      throw new IOException("Git configuration is not a bounded regular file.");
+    }
+    byte[] bytes;
+    try (SeekableByteChannel channel =
+        directory.newByteChannel(
+            name, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+      ByteBuffer buffer = ByteBuffer.allocate((int) before.size() + 1);
+      while (buffer.hasRemaining() && channel.read(buffer) != -1) {}
+      bytes = java.util.Arrays.copyOf(buffer.array(), buffer.position());
+      if (bytes.length != before.size() || channel.size() != before.size()) {
+        throw unsafeInspection();
+      }
+    }
+    BasicFileAttributes after =
+        directory
+            .getFileAttributeView(name, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
+            .readAttributes();
+    if (!key.equals(after.fileKey()) || after.size() != before.size()) {
+      throw unsafeInspection();
+    }
+    requireSafeConfigurationBytes(bytes);
+  }
+
+  private static void requireSafeConfigurationBytes(byte[] bytes) throws IOException {
+    String text = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString();
+    String lowered = asciiLower(text);
+    if (text.indexOf('\ufeff') >= 0
+        || text.indexOf('\0') >= 0
+        || lowered.contains("filter")
+        || lowered.contains("include")
+        || lowered.contains("attributesfile")
+        || lowered.contains("worktreeconfig")
+        || text.contains("\\\n")
+        || text.contains("\\\r")) {
       throw new IOException(
-          "Workspace Git configuration can load external files or executable content filters; remove those settings before retrying.");
+          "Workspace Git configuration contains unsupported executable or external directives.");
     }
-    if (unsafe.exitCode() != 1 || !unsafe.text().isEmpty()) {
-      throw invalidOutput();
+    for (int index = 0; index < text.length(); index++) {
+      char value = text.charAt(index);
+      if ((value < 0x20 && value != '\n' && value != '\r' && value != '\t') || value == 0x7f) {
+        throw new IOException("Workspace Git configuration contains unsupported control bytes.");
+      }
     }
+  }
+
+  private static String asciiLower(String value) {
+    StringBuilder lowered = new StringBuilder(value.length());
+    for (int index = 0; index < value.length(); index++) {
+      char character = value.charAt(index);
+      lowered.append(
+          character >= 'A' && character <= 'Z' ? (char) (character + ('a' - 'A')) : character);
+    }
+    return lowered.toString();
   }
 
   private static void requireNoExecutableFilters(Path root) throws IOException {
@@ -546,9 +604,7 @@ public final class ProcessGitRepository implements GitRepository {
                 && !(name.equals("config") || name.equals("config.worktree"))) {
               throw unsafeInspection();
             }
-            if (isLocalGitConfiguration(root, file)) {
-              requireLocalConfiguration(file);
-            } else if (isAttributesFile(root, file)) {
+            if (isAttributesFile(root, file)) {
               requireNoFilterAttribute(file);
             }
             return FileVisitResult.CONTINUE;
@@ -560,12 +616,6 @@ public final class ProcessGitRepository implements GitRepository {
             }
           }
         });
-  }
-
-  private static boolean isLocalGitConfiguration(Path root, Path file) {
-    String name = file.getFileName().toString();
-    return (name.equals("config") || name.equals("config.worktree"))
-        && containsGitSegment(root.relativize(file));
   }
 
   private static boolean isAttributesFile(Path root, Path file) {

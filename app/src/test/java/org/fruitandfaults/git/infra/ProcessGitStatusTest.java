@@ -322,9 +322,6 @@ class ProcessGitStatusTest {
           assertEquals(root, request.workingDirectory());
           assertEquals(timeout, request.timeout());
           assertEquals(limit, request.maxCapturedBytes());
-          if (request.arguments().contains("--get-regexp")) {
-            return new ProcessResult.Exited(1, ProcessResult.Output.empty());
-          }
           try {
             Process process = launcher.start(request.arguments());
             try (InputStream input = process.getInputStream()) {
