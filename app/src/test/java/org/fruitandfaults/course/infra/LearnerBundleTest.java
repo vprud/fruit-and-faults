@@ -140,9 +140,37 @@ class LearnerBundleTest {
   }
 
   @Test
+  void wrapperUsesATemporaryGradleHomeInsteadOfTheDeveloperHome() throws Exception {
+    disclose(0);
+    Files.writeString(
+        workspace.resolve("gradlew"), "#!/bin/sh\nprintf '%s\\n' \"$GRADLE_USER_HOME\"\n");
+    Files.writeString(workspace.resolve("gradlew.bat"), "@echo off\r\necho %GRADLE_USER_HOME%\r\n");
+
+    LearnerJourneyFixture.BuildResult probe = LearnerJourneyFixture.build(workspace);
+
+    assertEquals(0, probe.exitCode(), probe.output());
+    assertEquals(
+        workspace.toRealPath().resolve(".gradle/fixture-user-home").toString(),
+        probe.output().strip());
+    assertNotEquals(
+        Path.of(System.getProperty("user.home"), ".gradle").toString(), probe.output().strip());
+    Path isolated = Path.of(probe.output().strip());
+    assertTrue(isolated.startsWith(workspace.toRealPath()));
+    assertFalse(Files.exists(isolated.resolve("daemon")));
+    assertFalse(Files.exists(isolated.resolve("native")));
+    assertFalse(Files.exists(isolated.resolve("caches")));
+    try (var files = Files.walk(isolated)) {
+      assertTrue(
+          files.noneMatch(Files::isSymbolicLink),
+          "Offline seed must contain copies, never home-linked files");
+    }
+  }
+
+  @Test
   void cumulativeLearnerJourneyRequiresEachExerciseAndPreservesEarlierChecks() throws Exception {
     disclose(0);
     LearnerJourneyFixture.BuildResult initial = LearnerJourneyFixture.build(workspace);
+    assertIsolatedGradleHome(initial);
     assertNotEquals(0, initial.exitCode(), initial.output());
     assertTrue(
         initial.output().replace('\\', '/').contains(MAIN + "Starter.java:9: error: ';' expected"),
@@ -203,6 +231,7 @@ class LearnerBundleTest {
 
   private void assertUnsolvedBuild() throws Exception {
     LearnerJourneyFixture.BuildResult result = LearnerJourneyFixture.build(workspace);
+    assertIsolatedGradleHome(result);
     assertNotEquals(0, result.exitCode(), result.output());
     assertTrue(result.output().contains("Task :test FAILED"), result.output());
     assertFalse(result.output().contains("Task :compileJava FAILED"), result.output());
@@ -210,12 +239,24 @@ class LearnerBundleTest {
 
   private void assertPassingBuild(int expectedTests) throws Exception {
     LearnerJourneyFixture.BuildResult result = LearnerJourneyFixture.build(workspace);
+    assertIsolatedGradleHome(result);
     assertEquals(0, result.exitCode(), result.output());
     assertEquals(expectedTests, LearnerJourneyFixture.passingTestCount(workspace));
   }
 
   private void disclose(int index) throws IOException {
     LearnerJourneyFixture.disclose(workspace, course.lessons().get(index), catalog);
+  }
+
+  private void assertIsolatedGradleHome(LearnerJourneyFixture.BuildResult result)
+      throws IOException {
+    assertTrue(
+        result
+            .output()
+            .contains(
+                "FIXTURE_GRADLE_HOME="
+                    + workspace.toRealPath().resolve(".gradle/fixture-user-home")),
+        result.output());
   }
 
   private static AssetPolicy expectedPolicy(String path) {
