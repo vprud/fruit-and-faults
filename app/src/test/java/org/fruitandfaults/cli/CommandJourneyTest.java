@@ -18,6 +18,9 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.function.Supplier;
 
+import org.fruitandfaults.course.application.AdvanceResult;
+import org.fruitandfaults.course.application.CourseStatus;
+import org.fruitandfaults.course.application.HintResult;
 import org.fruitandfaults.course.domain.Course;
 import org.fruitandfaults.course.domain.Lesson;
 import org.fruitandfaults.course.domain.ReflectionOption;
@@ -37,6 +40,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class CommandJourneyTest {
   @TempDir private Path temporary;
@@ -286,6 +290,113 @@ class CommandJourneyTest {
             "list");
     assertEquals(10, invalidBundle.code());
     assertFalse(invalidBundle.err().contains("PRIVATE"));
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "start",
+        "status",
+        "check",
+        "check-interrupted",
+        "hint",
+        "next",
+        "list",
+        "locator"
+      })
+  void cancellationAtCommandBoundaryIsNeverRenderedAsLearnerOrUnsafeFailure(String command)
+      throws IOException {
+    var fixture = new Fixture(temporary.toRealPath());
+    fixture.run("start", fixture.root.toString(), "--yes");
+    byte[] before = fixture.state();
+    var diagnostic = new Diagnostic("Valid state", "Unsafe workspace", "Inspect unsafe paths");
+    var original = fixture.application;
+    var interrupted =
+        new ApplicationFactory.Application(
+            current -> {
+              if (command.equals("locator")) {
+                throw new IOException(new java.io.InterruptedIOException("PRIVATE"));
+              }
+              return original.locator().locate(current);
+            },
+            request -> {
+              Thread.currentThread().interrupt();
+              return new StartResult.Conflict(request.target(), "unsafe", List.of());
+            },
+            root -> {
+              Thread.currentThread().interrupt();
+              return new CourseStatus.Unavailable(FailureCategory.WORKSPACE_CONFLICT, diagnostic);
+            },
+            root -> {
+              Thread.currentThread().interrupt();
+              return failure(
+                  command.equals("check-interrupted")
+                      ? FailureCategory.INTERRUPTED
+                      : FailureCategory.INCOMPLETE_WORK);
+            },
+            root -> {
+              Thread.currentThread().interrupt();
+              return new HintResult.Unavailable(FailureCategory.WORKSPACE_CONFLICT, diagnostic);
+            },
+            request -> {
+              Thread.currentThread().interrupt();
+              return new AdvanceResult.Incorrect("unsafe");
+            },
+            root -> {
+              throw new java.nio.channels.ClosedByInterruptException();
+            });
+    String[] args =
+        switch (command) {
+          case "start" -> new String[] {"start", fixture.root.toString(), "--yes"};
+          case "next" -> new String[] {"next", "--answer", "compile-before-tests", "--yes"};
+          case "locator" -> new String[] {"status"};
+          case "check-interrupted" -> new String[] {"check"};
+          default -> new String[] {command};
+        };
+    try {
+      var result = run(() -> interrupted, fixture.root, command.equals("next"), "", args);
+      assertEquals(5, result.code());
+      assertEquals("", result.out());
+      assertTrue(result.err().contains("прерван"));
+      assertTrue(result.err().contains("повторите"));
+      assertFalse(result.err().contains("unsafe"));
+      assertFalse(result.err().contains("небезопас"));
+      assertFalse(result.err().contains("PRIVATE"));
+      assertTrue(Thread.currentThread().isInterrupted());
+      Thread.interrupted();
+      assertArrayEquals(before, fixture.state());
+      assertFalse(Files.exists(fixture.root.resolve(".fruit-and-faults/transition.json")));
+    } finally {
+      Thread.interrupted();
+    }
+  }
+
+  @Test
+  void legitimatelyCompletedSuccessIsNotOverriddenByALateInterrupt() throws IOException {
+    var fixture = new Fixture(temporary.toRealPath());
+    fixture.run("start", fixture.root.toString(), "--yes");
+    var original = fixture.application;
+    var completed =
+        new ApplicationFactory.Application(
+            original.locator(),
+            original.start(),
+            original.status(),
+            root -> {
+              Thread.currentThread().interrupt();
+              return new CheckOutcome.Passed(List.of());
+            },
+            original.hint(),
+            original.next(),
+            original.list());
+    try {
+      var result = run(() -> completed, fixture.root, false, "", "check");
+      assertEquals(0, result.code());
+      assertEquals("", result.err());
+      assertTrue(result.out().contains("Проверка пройдена"));
+      assertTrue(Thread.currentThread().isInterrupted());
+    } finally {
+      Thread.interrupted();
+    }
   }
 
   @ParameterizedTest

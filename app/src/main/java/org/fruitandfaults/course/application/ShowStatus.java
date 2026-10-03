@@ -20,6 +20,7 @@ import org.fruitandfaults.progress.domain.CourseProgress;
 import org.fruitandfaults.validation.domain.Diagnostic;
 import org.fruitandfaults.validation.domain.FailureCategory;
 import org.fruitandfaults.workspace.application.ManagedFilesRepository;
+import org.fruitandfaults.workspace.application.WorkspaceCancellation;
 import org.fruitandfaults.workspace.application.WorkspaceFiles;
 import org.fruitandfaults.workspace.domain.ManagedFile;
 import org.fruitandfaults.workspace.domain.ManagedFiles;
@@ -138,7 +139,10 @@ public final class ShowStatus {
             case UNAVAILABLE, EXIT_FAILURE -> FailureCategory.WORKSPACE_CONFLICT;
           });
     } catch (IOException | IllegalArgumentException failed) {
-      return unavailable(FailureCategory.WORKSPACE_CONFLICT);
+      return unavailable(
+          WorkspaceCancellation.restoreIfInterrupted(failed)
+              ? FailureCategory.INTERRUPTED
+              : FailureCategory.WORKSPACE_CONFLICT);
     } catch (RuntimeException failed) {
       return unavailable(FailureCategory.INTERNAL_ERROR);
     }
@@ -187,12 +191,14 @@ public final class ShowStatus {
             "Valid course progress, disclosed ownership, safe artifacts, and a local workspace repository.",
             switch (category) {
               case TIMEOUT -> "Local Git inspection exceeded its deadline.";
-              case INTERRUPTED -> "Local Git inspection was interrupted.";
+              case INTERRUPTED -> "Local workspace or Git inspection was interrupted.";
               case INTERNAL_ERROR ->
                   "Installed course content or a status adapter could not be loaded.";
               default ->
                   "Workspace progress, ownership, artifact paths, or local Git state is absent, incompatible, or unsafe.";
             },
-            "Preserve the workspace, inspect its local course metadata and Git state, then retry status."));
+            category == FailureCategory.INTERRUPTED
+                ? "Preserve existing files and progress; retry status when ready."
+                : "Preserve the workspace, inspect its local course metadata and Git state, then retry status."));
   }
 }

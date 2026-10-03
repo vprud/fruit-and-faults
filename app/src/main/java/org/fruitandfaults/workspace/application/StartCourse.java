@@ -69,6 +69,8 @@ public final class StartCourse {
    */
   public StartResult execute(StartRequest request) {
     Path root = request.target();
+    if (WorkspaceCancellation.restoreIfInterrupted(null))
+      return cancelled(root, StartResult.Stage.WORKSPACE_INSPECTION);
     WorkspaceSetup.Destination destination;
     try {
       destination = setup.inspect(root);
@@ -90,6 +92,8 @@ public final class StartCourse {
         } catch (GitInitializationException unavailable) {
           return failure(root, StartResult.Stage.GIT_INSPECTION, unavailable);
         } catch (IOException invalidGit) {
+          if (WorkspaceCancellation.restoreIfInterrupted(invalidGit))
+            return cancelled(root, StartResult.Stage.GIT_INSPECTION);
           return invalidRepository(root);
         }
         return resume(request, initialized.workspace());
@@ -113,11 +117,15 @@ public final class StartCourse {
         }
       }
     } catch (IOException invalid) {
+      if (WorkspaceCancellation.restoreIfInterrupted(invalid))
+        return cancelled(root, StartResult.Stage.WORKSPACE_INSPECTION);
       return conflict(
           root,
           "Destination or workspace state is unsafe or invalid; inspect its directories and metadata.",
           List.of(root));
     }
+    if (WorkspaceCancellation.restoreIfInterrupted(null))
+      return cancelled(root, StartResult.Stage.WORKSPACE_INSPECTION);
     if (!request.confirmed()) {
       return new StartResult.PreviewRequired(root, initialPaths(root));
     }
@@ -155,6 +163,8 @@ public final class StartCourse {
     var pending = journals.load(root);
     Optional<CourseProgress> current = progress.load(root);
     Optional<ManagedFiles> managed = manifests.load(root);
+    if (WorkspaceCancellation.restoreIfInterrupted(null))
+      return cancelled(root, StartResult.Stage.WORKSPACE_INSPECTION);
     if (pending.isEmpty() && current.isPresent()) {
       return managed.isPresent()
           ? new StartResult.Resumed(workspace, current.orElseThrow())
@@ -204,6 +214,8 @@ public final class StartCourse {
       } catch (GitInitializationException unavailable) {
         return failure(root, StartResult.Stage.GIT_INSPECTION, unavailable);
       } catch (IOException invalidGit) {
+        if (WorkspaceCancellation.restoreIfInterrupted(invalidGit))
+          return cancelled(root, StartResult.Stage.GIT_INSPECTION);
         return invalidRepository(root);
       }
       DisclosureResult applied =
@@ -286,8 +298,16 @@ public final class StartCourse {
   }
 
   private static StartResult.Failed failure(Path root, StartResult.Stage stage, Exception failed) {
+    if (WorkspaceCancellation.restoreIfInterrupted(failed)
+        || (failed instanceof GitInitializationException gitFailure
+            && gitFailure.reason() == GitInitializationException.Reason.INTERRUPTED)) {
+      Thread.currentThread().interrupt();
+      return cancelled(root, stage);
+    }
     String diagnostic =
         switch (stage) {
+          case WORKSPACE_INSPECTION ->
+              "Workspace preparation could not be inspected; preserve existing state and retry start.";
           case DIRECTORY_CREATION ->
               "Directory creation failed; any created directories remain. Inspect the destination before retrying.";
           case GIT_INITIALIZATION ->
@@ -307,27 +327,28 @@ public final class StartCourse {
       diagnostic +=
           " Installed course content is invalid or unavailable; restore the original course installation before retrying.";
     }
-    boolean interrupted =
-        failed instanceof java.io.InterruptedIOException
-            || failed instanceof java.nio.channels.ClosedByInterruptException
-            || Thread.currentThread().isInterrupted();
-    if (interrupted) Thread.currentThread().interrupt();
     FailureCategory category =
-        interrupted
-            ? FailureCategory.INTERRUPTED
-            : failed instanceof GitInitializationException gitFailure
-                ? switch (gitFailure.reason()) {
-                  case TIMEOUT -> FailureCategory.TIMEOUT;
-                  case INTERRUPTED -> FailureCategory.INTERRUPTED;
-                  case UNAVAILABLE -> FailureCategory.INTERNAL_ERROR;
-                  case EXIT_FAILURE ->
-                      stage == StartResult.Stage.GIT_INSPECTION
-                          ? FailureCategory.WORKSPACE_CONFLICT
-                          : FailureCategory.INTERNAL_ERROR;
-                }
-                : failed instanceof IllegalArgumentException
-                    ? FailureCategory.INTERNAL_ERROR
-                    : FailureCategory.WORKSPACE_CONFLICT;
+        failed instanceof GitInitializationException gitFailure
+            ? switch (gitFailure.reason()) {
+              case TIMEOUT -> FailureCategory.TIMEOUT;
+              case INTERRUPTED -> FailureCategory.INTERRUPTED;
+              case UNAVAILABLE -> FailureCategory.INTERNAL_ERROR;
+              case EXIT_FAILURE ->
+                  stage == StartResult.Stage.GIT_INSPECTION
+                      ? FailureCategory.WORKSPACE_CONFLICT
+                      : FailureCategory.INTERNAL_ERROR;
+            }
+            : failed instanceof IllegalArgumentException
+                ? FailureCategory.INTERNAL_ERROR
+                : FailureCategory.WORKSPACE_CONFLICT;
     return new StartResult.Failed(root, stage, diagnostic, category);
+  }
+
+  private static StartResult.Failed cancelled(Path root, StartResult.Stage stage) {
+    return new StartResult.Failed(
+        root,
+        stage,
+        "Workspace preparation was interrupted; retain existing files and progress and retry start when ready.",
+        FailureCategory.INTERRUPTED);
   }
 }

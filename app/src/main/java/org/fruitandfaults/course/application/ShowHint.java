@@ -9,6 +9,7 @@ import org.fruitandfaults.progress.application.ProgressRepository;
 import org.fruitandfaults.progress.domain.CourseProgress;
 import org.fruitandfaults.validation.domain.Diagnostic;
 import org.fruitandfaults.validation.domain.FailureCategory;
+import org.fruitandfaults.workspace.application.WorkspaceCancellation;
 
 /** Loads a selected active hint before atomically persisting its level; level three is stable. */
 public final class ShowHint {
@@ -33,6 +34,8 @@ public final class ShowHint {
    * @return active hint, completion, or safe failure
    */
   public HintResult execute(Path root) {
+    if (WorkspaceCancellation.restoreIfInterrupted(null))
+      return unavailable(FailureCategory.INTERRUPTED);
     Course installed;
     try {
       installed = catalog.load();
@@ -56,7 +59,10 @@ public final class ShowHint {
       }
       return new HintResult.Revealed(id, level, text);
     } catch (IOException | IllegalArgumentException failed) {
-      return unavailable(FailureCategory.WORKSPACE_CONFLICT);
+      return unavailable(
+          WorkspaceCancellation.restoreIfInterrupted(failed)
+              ? FailureCategory.INTERRUPTED
+              : FailureCategory.WORKSPACE_CONFLICT);
     } catch (RuntimeException failed) {
       return unavailable(FailureCategory.INTERNAL_ERROR);
     }
@@ -67,9 +73,14 @@ public final class ShowHint {
         category,
         new Diagnostic(
             "Loadable active lesson hints and safely replaceable valid progress.",
-            category == FailureCategory.INTERNAL_ERROR
-                ? "Installed hint text or an adapter is unavailable."
-                : "Progress is absent, incompatible, malformed, or could not be safely persisted.",
-            "Preserve the previous progress and inspect the course installation and workspace metadata before retrying hint."));
+            switch (category) {
+              case INTERRUPTED -> "Local hint progress loading or persistence was interrupted.";
+              case INTERNAL_ERROR -> "Installed hint text or an adapter is unavailable.";
+              default ->
+                  "Progress is absent, incompatible, malformed, or could not be safely persisted.";
+            },
+            category == FailureCategory.INTERRUPTED
+                ? "Preserve existing files and progress; retry hint when ready."
+                : "Preserve the previous progress and inspect the course installation and workspace metadata before retrying hint."));
   }
 }

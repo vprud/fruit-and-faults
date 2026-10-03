@@ -16,7 +16,9 @@ import org.fruitandfaults.lesson.ReflectionAnswer;
 import org.fruitandfaults.validation.domain.Diagnostic;
 import org.fruitandfaults.workspace.application.StartRequest;
 import org.fruitandfaults.workspace.application.StartResult;
+import org.fruitandfaults.workspace.application.WorkspaceCancellation;
 import org.fruitandfaults.workspace.application.WorkspaceLocationException;
+import org.jspecify.annotations.Nullable;
 
 /** Starts the Fruit and Faults course CLI. */
 public final class FruitAndFaults {
@@ -126,6 +128,8 @@ public final class FruitAndFaults {
     try {
       application = factory.get();
     } catch (RuntimeException failed) {
+      if (WorkspaceCancellation.restoreIfInterrupted(failed))
+        return interruption(renderer, arguments.verbose(), failed);
       return renderer.diagnostic(
           ExitCode.INTERNAL_ERROR,
           new Diagnostic(
@@ -139,18 +143,28 @@ public final class FruitAndFaults {
       if (arguments.command() == Arguments.Command.START) {
         Path target =
             current.resolve(Path.of(arguments.target().orElseThrow())).toAbsolutePath().normalize();
-        return start(application, target, arguments, terminal, renderer);
+        return completed(
+            start(application, target, arguments, terminal, renderer),
+            renderer,
+            arguments.verbose());
       }
       Path root = application.locator().locate(current).path();
-      return switch (arguments.command()) {
-        case STATUS -> renderer.status(application.status().apply(root), arguments.verbose());
-        case CHECK -> renderer.check(application.check().execute(root), arguments.verbose());
-        case HINT -> renderer.hint(application.hint().apply(root), arguments.verbose());
-        case NEXT -> next(application, root, arguments, terminal, renderer);
-        case LIST -> renderer.list(application.list().execute(root));
-        case START -> throw new IllegalStateException("Start dispatched before discovery.");
-      };
+      CommandResult result =
+          switch (arguments.command()) {
+            case STATUS -> renderer.status(application.status().apply(root), arguments.verbose());
+            case CHECK -> renderer.check(application.check().execute(root), arguments.verbose());
+            case HINT -> renderer.hint(application.hint().apply(root), arguments.verbose());
+            case NEXT -> next(application, root, arguments, terminal, renderer);
+            case LIST -> renderer.list(application.list().execute(root));
+            case START -> throw new IllegalStateException("Start dispatched before discovery.");
+          };
+      return completed(result, renderer, arguments.verbose());
     } catch (WorkspaceLocationException failed) {
+      if (failed.reason() == WorkspaceLocationException.Reason.INTERRUPTED
+          || WorkspaceCancellation.restoreIfInterrupted(failed)) {
+        Thread.currentThread().interrupt();
+        return interruption(renderer, arguments.verbose(), failed);
+      }
       return renderer.diagnostic(
           failed.reason() == WorkspaceLocationException.Reason.NOT_FOUND
               ? ExitCode.INVALID_ARGUMENTS
@@ -173,10 +187,10 @@ public final class FruitAndFaults {
           arguments.verbose(),
           failed);
     } catch (IOException | IllegalArgumentException failed) {
+      if (WorkspaceCancellation.restoreIfInterrupted(failed))
+        return interruption(renderer, arguments.verbose(), failed);
       return renderer.diagnostic(
-          Thread.currentThread().isInterrupted()
-              ? ExitCode.VALIDATION_INTERRUPTED
-              : ExitCode.WORKSPACE_CONFLICT,
+          ExitCode.WORKSPACE_CONFLICT,
           new Diagnostic(
               "Корректное сохранённое состояние и безопасный ввод.",
               "Состояние курса или ввод не удалось безопасно прочитать.",
@@ -184,6 +198,8 @@ public final class FruitAndFaults {
           arguments.verbose(),
           failed);
     } catch (RuntimeException failed) {
+      if (WorkspaceCancellation.restoreIfInterrupted(failed))
+        return interruption(renderer, arguments.verbose(), failed);
       return renderer.diagnostic(
           ExitCode.INTERNAL_ERROR,
           new Diagnostic(
@@ -203,6 +219,9 @@ public final class FruitAndFaults {
       TextRenderer renderer)
       throws IOException {
     StartResult result = application.start().apply(new StartRequest(root, false));
+    if (!(result instanceof StartResult.Created || result instanceof StartResult.Resumed)
+        && WorkspaceCancellation.restoreIfInterrupted(null))
+      return interruption(renderer, arguments.verbose(), null);
     if (result instanceof StartResult.PreviewRequired) {
       terminal.write(renderer.start(result, arguments.verbose()));
       if (!arguments.yes()) {
@@ -232,6 +251,10 @@ public final class FruitAndFaults {
     Optional<ReflectionAnswer> answer = arguments.answer().map(ReflectionAnswer::new);
     for (int attempt = 0; attempt < 32; attempt++) {
       AdvanceResult result = application.next().apply(new AdvanceRequest(root, answer, false));
+      if (!(result instanceof AdvanceResult.Advanced
+              || result instanceof AdvanceResult.CourseComplete)
+          && WorkspaceCancellation.restoreIfInterrupted(null))
+        return interruption(renderer, arguments.verbose(), null);
       if (result instanceof AdvanceResult.NeedsAnswer question) {
         terminal.write(renderer.next(question, arguments.verbose()));
         if (!terminal.interactive())
@@ -295,6 +318,25 @@ public final class FruitAndFaults {
   private static CommandResult cancelled(TextRenderer renderer) {
     CommandResult text = renderer.success("Переход отменён. Прогресс сохранён.\n");
     return new CommandResult(ExitCode.INCOMPLETE, text.stdout(), "");
+  }
+
+  private static CommandResult interruption(
+      TextRenderer renderer, boolean verbose, @Nullable Throwable cause) {
+    return renderer.diagnostic(
+        ExitCode.VALIDATION_INTERRUPTED,
+        new Diagnostic(
+            "Завершённая команда без отмены.",
+            "Операция прервана; это не признак повреждения рабочего каталога.",
+            "Сохраните существующие файлы, прогресс и журнал; повторите команду, когда будете готовы."),
+        verbose,
+        cause);
+  }
+
+  private static CommandResult completed(
+      CommandResult result, TextRenderer renderer, boolean verbose) {
+    return result.exitCode() != ExitCode.SUCCESS && WorkspaceCancellation.restoreIfInterrupted(null)
+        ? interruption(renderer, verbose, null)
+        : result;
   }
 
   private static CommandResult versionResult() {

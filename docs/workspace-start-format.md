@@ -51,7 +51,11 @@ Git timeout/interruption map to exit 5, initialization infrastructure failures
 map to 10, and safe filesystem publication failures map to 3. Its original
 three-argument constructor and accessors remain available. Read-only resume
 inspection also preserves Git timeout/interruption categories; diagnostics are
-never parsed to determine an exit code. See the [CLI contract](cli-contract.md).
+never parsed to determine an exit code. Interrupted preflight, marker, journal,
+manifest, or progress reads use typed interruption rather than a conflict;
+direct/wrapped interrupted I/O restores the thread flag. `WORKSPACE_INSPECTION`
+identifies this read-only boundary before mutation. Preexisting cancellation
+does not create the selected destination. See the [CLI contract](cli-contract.md).
 
 The committed marker contains exactly two fields:
 
