@@ -38,9 +38,11 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * Strict version-one ownership JSON in .fruit-and-faults/managed-files.json. Existing malformed or
- * future documents are preserved. Same-directory temporary creation, writes, and atomic replacement
- * use a verified secure directory handle. Unsupported atomic replacement fails without a
- * destructive fallback. Cleanup verifies the original entry identity through the same handle.
+ * future documents are preserved. Same-directory temporary creation, writes, exclusive initial
+ * creation, and atomic replacement use a verified secure directory handle. Initialization writes
+ * directly to a reserved entry; a crash may leave an invalid partial document that is preserved.
+ * Unsupported atomic replacement fails without a destructive fallback. Cleanup verifies the
+ * original entry identity through the same handle.
  */
 public final class JacksonManagedFilesRepository implements ManagedFilesRepository {
   static final int MAX_DOCUMENT_BYTES = 1_048_576;
@@ -57,8 +59,9 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
   private final SafeWorkspaceFiles.DocumentWriter writer;
   private final DocumentMover mover;
   private final SafeWorkspaceFiles.IdentityReader identityReader;
+  private final SafeWorkspaceFiles.EntryCreator creator;
 
-  /** Uses strict JSON validation, flushed writes, and atomic replacement when supported. */
+  /** Uses strict JSON validation, exclusive initialization, and secure atomic replacement. */
   public JacksonManagedFilesRepository() {
     this(
         SafeWorkspaceFiles::writeFlushed,
@@ -73,9 +76,18 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
       SafeWorkspaceFiles.DocumentWriter writer,
       DocumentMover mover,
       SafeWorkspaceFiles.IdentityReader identityReader) {
+    this(writer, mover, identityReader, SafeWorkspaceFiles::createNewChannel);
+  }
+
+  JacksonManagedFilesRepository(
+      SafeWorkspaceFiles.DocumentWriter writer,
+      DocumentMover mover,
+      SafeWorkspaceFiles.IdentityReader identityReader,
+      SafeWorkspaceFiles.EntryCreator creator) {
     this.writer = Objects.requireNonNull(writer);
     this.mover = Objects.requireNonNull(mover);
     this.identityReader = Objects.requireNonNull(identityReader);
+    this.creator = Objects.requireNonNull(creator);
   }
 
   @Override
@@ -110,13 +122,17 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
           fileChannel.force(true);
         }
         verifyBeforeReplacement(root, previous, directories, directory, temporary, key);
-        mover.move(directory, temporary, target);
+        if (previous.isEmpty()) {
+          initialize(directory, target, bytes, directories);
+        } else {
+          mover.move(directory, temporary, target);
+        }
         SafeWorkspaceFiles.verifyDirectories(directories);
       } catch (WorkspaceWriteException | ManagedFilesReadException invalid) {
         throw invalid;
       } catch (UnsupportedOperationException | AtomicMoveNotSupportedException unsupported) {
         throw SafeWorkspaceFiles.unsupported(
-            "Atomic directory-relative manifest replacement is unavailable; the previous manifest is preserved. Select a supported filesystem.",
+            "Directory-relative manifest publication is unavailable; existing state is preserved. Select a supported filesystem.",
             unsupported);
       } catch (IOException failed) {
         throw new WorkspaceWriteException(
@@ -126,6 +142,30 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
       } finally {
         SafeWorkspaceFiles.cleanupOwnedTemporary(directory, temporary, key);
       }
+    }
+  }
+
+  private void initialize(
+      SecureDirectoryStream<Path> directory,
+      Path target,
+      byte[] bytes,
+      List<SafeWorkspaceFiles.DirectoryIdentity> directories)
+      throws IOException {
+    @Nullable Object key = null;
+    try {
+      try (SeekableByteChannel channel = creator.create(directory, target)) {
+        key =
+            SafeWorkspaceFiles.requireStableKey(
+                SafeWorkspaceFiles.attributes(directory, target), identityReader);
+        FileChannel fileChannel = SafeWorkspaceFiles.requireFlushable(channel);
+        writer.write(fileChannel, bytes);
+        fileChannel.force(true);
+      }
+      SafeWorkspaceFiles.verifyDirectories(directories);
+      SafeWorkspaceFiles.requireEntryIdentity(directory, target, key);
+    } catch (IOException | RuntimeException failed) {
+      SafeWorkspaceFiles.cleanupOwnedTemporary(directory, target, key);
+      throw failed;
     }
   }
 
