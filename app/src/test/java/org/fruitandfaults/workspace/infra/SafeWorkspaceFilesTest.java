@@ -28,6 +28,8 @@ import org.fruitandfaults.workspace.domain.WorkspacePath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class SafeWorkspaceFilesTest {
   private static final byte[] BYTES = "hello".getBytes(StandardCharsets.UTF_8);
@@ -239,7 +241,7 @@ class SafeWorkspaceFilesTest {
   }
 
   @Test
-  void partialWriteFailureCleansOnlyOwnedTemporaryFile() throws IOException {
+  void partialWriteFailureRetainsAmbiguousTargetForRecovery() throws IOException {
     SafeWorkspaceFiles failing =
         new SafeWorkspaceFiles(
             (channel, bytes) -> {
@@ -250,7 +252,64 @@ class SafeWorkspaceFilesTest {
     assertThrows(
         IOException.class,
         () -> failing.writeNewSafely(root, WorkspacePath.parse("Game.java"), BYTES));
-    assertEquals(List.of(), children(root));
+    assertEquals("partial", Files.readString(root.resolve("Game.java")));
+    assertThrows(
+        IOException.class,
+        () -> files.writeNewSafely(root, WorkspacePath.parse("Game.java"), BYTES));
+    assertEquals("partial", Files.readString(root.resolve("Game.java")));
+    assertEquals(List.of(root.resolve("Game.java")), children(root));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"", "foreign replacement", "jello", "hello extra"})
+  void successfulCreationRejectsForeignBytesSwappedInsideCreator(String foreign)
+      throws IOException {
+    SafeWorkspaceFiles replaced =
+        new SafeWorkspaceFiles(SafeWorkspaceFiles::writeFlushed, swappingCreator(foreign));
+
+    WorkspaceWriteException failure =
+        assertThrows(
+            WorkspaceWriteException.class,
+            () -> replaced.writeNewSafely(root, WorkspacePath.parse("Game.java"), BYTES));
+
+    assertAll(
+        () -> assertEquals(WorkspaceWriteException.Reason.PUBLICATION_FAILED, failure.reason()),
+        () -> assertEquals(foreign, Files.readString(root.resolve("Game.java"))),
+        () -> assertEquals("hello", Files.readString(root.resolve("relocated-owned-entry"))),
+        () -> assertEquals(2, children(root).size()));
+  }
+
+  @Test
+  void successfulCreationAcceptsIdenticalBytesSwappedInsideCreator() throws IOException {
+    SafeWorkspaceFiles replaced =
+        new SafeWorkspaceFiles(SafeWorkspaceFiles::writeFlushed, swappingCreator("hello"));
+
+    replaced.writeNewSafely(root, WorkspacePath.parse("Game.java"), BYTES);
+
+    assertAll(
+        () -> assertEquals("hello", Files.readString(root.resolve("Game.java"))),
+        () -> assertEquals("hello", Files.readString(root.resolve("relocated-owned-entry"))),
+        () -> assertEquals(2, children(root).size()));
+  }
+
+  @Test
+  void failedCreationPreservesReplacementMadeInsideCreator() throws IOException {
+    SafeWorkspaceFiles replaced =
+        new SafeWorkspaceFiles(
+            (channel, bytes) -> {
+              channel.write(ByteBuffer.wrap("partial".getBytes(StandardCharsets.UTF_8)));
+              throw new IOException("injected write failure after creator swap");
+            },
+            swappingCreator("foreign replacement"));
+
+    assertAll(
+        () ->
+            assertThrows(
+                WorkspaceWriteException.class,
+                () -> replaced.writeNewSafely(root, WorkspacePath.parse("Game.java"), BYTES)),
+        () -> assertEquals("foreign replacement", Files.readString(root.resolve("Game.java"))),
+        () -> assertEquals("partial", Files.readString(root.resolve("relocated-owned-entry"))),
+        () -> assertEquals(2, children(root).size()));
   }
 
   @Test
@@ -398,6 +457,20 @@ class SafeWorkspaceFilesTest {
         HASH,
         new LessonId("first-run"),
         AssetPolicy.LEARNER_SCAFFOLD);
+  }
+
+  private SafeWorkspaceFiles.EntryCreator swappingCreator(String foreign) {
+    return (directory, target) -> {
+      var channel = SafeWorkspaceFiles.createNewChannel(directory, target);
+      try {
+        Files.move(root.resolve("Game.java"), root.resolve("relocated-owned-entry"));
+        Files.writeString(root.resolve("Game.java"), foreign);
+        return channel;
+      } catch (IOException | RuntimeException failed) {
+        channel.close();
+        throw failed;
+      }
+    };
   }
 
   private static List<Path> children(Path directory) throws IOException {

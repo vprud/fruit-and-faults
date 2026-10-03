@@ -164,6 +164,9 @@ public final class JacksonManagedFilesRepository implements ManagedFilesReposito
     }
     SafeWorkspaceFiles.verifyDirectories(directories);
     SafeWorkspaceFiles.requireEntryIdentity(directory, target, key);
+    SafeWorkspaceFiles.requireEntryContents(directory, target, bytes);
+    SafeWorkspaceFiles.requireEntryIdentity(directory, target, key);
+    SafeWorkspaceFiles.verifyDirectories(directories);
   }
 
   private void verifyBeforeReplacement(

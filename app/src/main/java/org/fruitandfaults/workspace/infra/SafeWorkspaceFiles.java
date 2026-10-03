@@ -2,6 +2,7 @@ package org.fruitandfaults.workspace.infra;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -17,6 +18,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -38,9 +40,9 @@ import org.jspecify.annotations.Nullable;
 /**
  * Rejects workspace symlinks and portable aliases. Learner destinations are reserved and written
  * through a verified secure parent handle with CREATE_NEW. Creation is exclusive and confined, but
- * bytes are visible during writing. An ordinary failure removes only the identified created entry;
- * a crash may leave partial bytes for disclosure-journal recovery. Providers without secure
- * handles, stable file keys, or flushable channels fail safely.
+ * bytes are visible during writing. Failures retain partial or ambiguous targets for
+ * disclosure-journal recovery. Success requires matching target bytes read through the same handle.
+ * Providers without secure handles, stable file keys, or flushable channels fail safely.
  */
 public final class SafeWorkspaceFiles implements WorkspaceFiles {
   static final int MAX_ASSET_BYTES = 16_777_216;
@@ -184,10 +186,12 @@ public final class SafeWorkspaceFiles implements WorkspaceFiles {
         openVerifiedDirectory(
             realRoot, Objects.requireNonNull(target.getParent()), directories, identityReader)) {
       Path name = Objects.requireNonNull(target.getFileName());
-      @Nullable Object key = null;
       try {
         verifyRegularFileIdentitySupport(directory, identityReader);
         verifyDirectories(directories);
+        // The directory entry key cannot prove which entry the opened channel owns after a swap.
+        // Retain this name on every failure rather than risk deleting a foreign replacement.
+        Object key;
         try (SeekableByteChannel channel = creator.create(directory, name)) {
           key = requireStableKey(attributes(directory, name), identityReader);
           FileChannel fileChannel = requireFlushable(channel);
@@ -196,8 +200,10 @@ public final class SafeWorkspaceFiles implements WorkspaceFiles {
         }
         verifyDirectories(directories);
         requireEntryIdentity(directory, name, key);
+        requireEntryContents(directory, name, bytes);
+        requireEntryIdentity(directory, name, key);
+        verifyDirectories(directories);
       } catch (IOException | RuntimeException failed) {
-        cleanupOwnedTemporary(directory, name, key);
         if (failed instanceof WorkspaceWriteException typed) {
           throw typed;
         }
@@ -337,6 +343,21 @@ public final class SafeWorkspaceFiles implements WorkspaceFiles {
     if (!observed.isRegularFile() || observed.isSymbolicLink() || !key.equals(observed.fileKey())) {
       throw new IOException(
           "Created entry changed during writing; preserve the replacement and inspect ownership.");
+    }
+  }
+
+  static void requireEntryContents(
+      SecureDirectoryStream<Path> directory, Path name, byte[] expected) throws IOException {
+    byte[] observed;
+    try (SeekableByteChannel channel =
+            directory.newByteChannel(
+                name, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS));
+        var input = Channels.newInputStream(channel)) {
+      observed = input.readNBytes(expected.length + 1);
+    }
+    if (!Arrays.equals(expected, observed)) {
+      throw new IOException(
+          "Created entry does not contain the expected bytes; preserve it and inspect the workspace.");
     }
   }
 

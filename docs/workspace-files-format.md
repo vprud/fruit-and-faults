@@ -46,10 +46,11 @@ limit is 1 MiB; individual inspected or disclosed assets are limited to 16 MiB.
 directory-relative `CREATE_NEW` through its verified secure parent handle, then
 writes and flushes that channel. A file appearing after preflight makes creation
 fail without replacing it. Bytes become visible during writing: the operation
-promises confinement and exclusivity, not atomic visibility. An ordinary failure
-removes only the identified created entry; a crash may leave a partial target
-for disclosure-journal recovery. Such a target is a conflict, never permission
-to overwrite it.
+promises confinement and exclusivity, not atomic visibility. Failures and crashes
+retain partial or ambiguous targets for disclosure-journal recovery: public Java
+APIs cannot prove that the target name still identifies the opened channel after
+a concurrent replacement. Such a target is a conflict, never permission to
+overwrite or delete it.
 
 Tool-owned manifest writes create and flush a same-directory temporary file
 through the verified secure handle. For an absent manifest, initialization
@@ -65,7 +66,16 @@ is replaced by an atomic move through that same handle. Unsupported atomic
 replacement fails while preserving the previous manifest. There is no pathname
 move or destructive replacement fallback.
 
-Cleanup verifies the original file identity through an open secure directory
+Successful learner asset publication and initial manifest creation require the
+target to contain exactly the requested asset bytes or encoded manifest bytes.
+After writing and flushing, the target is read through the same secure directory
+handle with symlink following disabled. This comparison reads at most the expected
+length plus one byte, bounded by the document or asset size limit plus one byte.
+Parent and entry identities are checked around the comparison. A mismatch reports
+`PUBLICATION_FAILED` and preserves the target; a replacement with identical bytes
+can succeed because the persisted content is the same.
+
+Temporary cleanup verifies the original file identity through an open secure directory
 handle. It preserves foreign replacements and never deletes through a replacement
 parent symlink. Providers without secure handles, stable directory/regular-file
 keys, or flushable channels report `UNSUPPORTED_PUBLICATION`. Regular-file key

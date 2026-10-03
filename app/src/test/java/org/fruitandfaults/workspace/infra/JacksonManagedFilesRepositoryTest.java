@@ -38,6 +38,7 @@ class JacksonManagedFilesRepositoryTest {
           + HASH
           + "\",\"lessonId\":\"first-run\",\"policy\":\"LEARNER_SCAFFOLD\"}";
   private static final String VALID = "{\"formatVersion\":1,\"files\":[" + ENTRY + "]}";
+  private static final String EMPTY_MANIFEST = "{\n  \"formatVersion\" : 1,\n  \"files\" : [ ]\n}";
   @TempDir private Path root;
   private final JacksonManagedFilesRepository repository = new JacksonManagedFilesRepository();
 
@@ -398,6 +399,47 @@ class JacksonManagedFilesRepositoryTest {
         () -> assertEquals(List.of(stateFile()), children(stateDirectory())));
   }
 
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "",
+        "foreign manifest replacement",
+        "{\"formatVersion\":1,\"files\":[]}",
+        "{\n  \"formatVersion\" : 2,\n  \"files\" : [ ]\n}",
+        "{\n  \"formatVersion\" : 1,\n  \"files\" : [ ]\n}extra"
+      })
+  void successfulInitializationRejectsForeignBytesSwappedInsideCreator(String foreign)
+      throws IOException {
+    JacksonManagedFilesRepository replaced = swappingInitialCreator(foreign);
+
+    WorkspaceWriteException failure =
+        assertThrows(
+            WorkspaceWriteException.class, () -> replaced.save(root, ManagedFiles.empty()));
+
+    assertAll(
+        () -> assertEquals(WorkspaceWriteException.Reason.PUBLICATION_FAILED, failure.reason()),
+        () -> assertEquals(foreign, Files.readString(stateFile())),
+        () ->
+            assertEquals(
+                EMPTY_MANIFEST, Files.readString(root.resolve("relocated-initial-manifest"))),
+        () -> assertEquals(List.of(stateFile()), children(stateDirectory())));
+  }
+
+  @Test
+  void successfulInitializationAcceptsIdenticalBytesSwappedInsideCreator() throws IOException {
+    JacksonManagedFilesRepository replaced = swappingInitialCreator(EMPTY_MANIFEST);
+
+    replaced.save(root, ManagedFiles.empty());
+
+    assertAll(
+        () -> assertEquals(EMPTY_MANIFEST, Files.readString(stateFile())),
+        () -> assertEquals(Optional.of(ManagedFiles.empty()), repository.load(root)),
+        () ->
+            assertEquals(
+                EMPTY_MANIFEST, Files.readString(root.resolve("relocated-initial-manifest"))),
+        () -> assertEquals(List.of(stateFile()), children(stateDirectory())));
+  }
+
   @Test
   void parentSwapInsideMoverCannotReplaceOutsideManifest() throws IOException {
     Path workspace = Files.createDirectory(root.resolve("workspace"));
@@ -498,6 +540,26 @@ class JacksonManagedFilesRepositoryTest {
   private void writeJson(String json) throws IOException {
     Files.createDirectories(stateDirectory());
     Files.write(stateFile(), json.getBytes(StandardCharsets.UTF_8));
+  }
+
+  private JacksonManagedFilesRepository swappingInitialCreator(String foreign) {
+    return new JacksonManagedFilesRepository(
+        SafeWorkspaceFiles::writeFlushed,
+        (directory, temporary, target) -> {
+          throw new AssertionError("Initialization cannot use replacing move");
+        },
+        BasicFileAttributes::fileKey,
+        (directory, target) -> {
+          var channel = SafeWorkspaceFiles.createNewChannel(directory, target);
+          try {
+            Files.move(stateFile(), root.resolve("relocated-initial-manifest"));
+            Files.writeString(stateFile(), foreign);
+            return channel;
+          } catch (IOException | RuntimeException failed) {
+            channel.close();
+            throw failed;
+          }
+        });
   }
 
   private Path stateFile() {
