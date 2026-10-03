@@ -5,8 +5,10 @@ already be normalized: empty paths, empty segments, `.`, `..`, Unix absolute
 paths, Windows drive/UNC paths, backslashes, colons, and control characters are
 rejected. Spaces and Cyrillic names are supported.
 
-Phase A requires an existing real workspace directory. It rejects every symlink
-within that workspace, including links pointing back inside it. A blocked path
+Disclosure requires an existing real workspace directory; `start` safely creates
+an absent destination or accepts an empty directory as described in
+[workspace initialization and discovery](workspace-start-format.md). It rejects
+every symlink within that workspace, including links pointing back inside it. A blocked path
 must be moved aside or replaced with a real directory before disclosure. Case
 and Unicode-normalization aliases are conservatively rejected on every host,
 so a course remains portable between case-sensitive and case-insensitive
