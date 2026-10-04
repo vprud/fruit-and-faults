@@ -52,6 +52,7 @@ fruit-and-faults --version
 fruit-and-faults start "$HOME/Projects/my-fruit-game" --yes
 cd "$HOME/Projects/my-fruit-game"
 fruit-and-faults status
+fruit-and-faults lesson
 ```
 
 On macOS, the CLI is installed under
@@ -85,16 +86,16 @@ workspace still depends on the Windows filesystem limitation described above.
 
 ## The learning loop
 
-Start with `check`. The first lesson intentionally contains a compilation
+Read the current instructions with `lesson`, then start with `check`. The first lesson intentionally contains a compilation
 error, so a failing check is part of the course—not a broken installation.
 
 ```text
-status → edit the game → check → commit → next
+lesson → edit the game → check → commit → next
                          ↑                 │
                          └──── new lesson ─┘
 ```
 
-1. Run `fruit-and-faults status` to see the current goal and next action.
+1. Run `fruit-and-faults lesson` to read the current instructions; use `status` for progress and the next action.
 2. Edit the game in your learner workspace.
 3. Run `fruit-and-faults check` and use `fruit-and-faults hint` when needed.
 4. When the check passes, review and commit your changes with Git.
@@ -113,6 +114,7 @@ directories.
 | `fruit-and-faults status` | Show the current lesson, relevant files, hints, Git state, and next action. |
 | `fruit-and-faults check` | Run the visible tests and independent behavior checks. |
 | `fruit-and-faults hint` | Reveal the next of three persisted hint levels. |
+| `fruit-and-faults lesson` | Read the active lesson's complete instructions without changing progress. |
 | `fruit-and-faults next [--answer <id>] [--yes]` | Validate, reflect, and open the next lesson after a clean commit. |
 | `fruit-and-faults list` | Show lesson titles and progress without revealing future exercises. |
 

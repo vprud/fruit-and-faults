@@ -1,12 +1,13 @@
 # Phase A CLI
 
-The installed `fruit-and-faults` executable exposes exactly six course commands:
+The installed `fruit-and-faults` executable exposes seven course commands:
 
 ```text
 fruit-and-faults start <workspace> [--yes]
 fruit-and-faults status
 fruit-and-faults check
 fruit-and-faults hint
+fruit-and-faults lesson
 fruit-and-faults next [--answer <option-id>] [--yes]
 fruit-and-faults list
 ```
@@ -21,10 +22,12 @@ Quote workspace paths containing spaces using the current shell's ordinary
 quoting rules. Unicode paths are supported; control/bidirectional format
 characters in a start destination are rejected before filesystem access.
 
-CLI instructions, headings, and prompts are in Russian. Installed course titles,
-goals, instructions, hints, reflection choices, and targeted feedback retain the
-bundle's published text. Help/version and the original Task 1 missing/unknown
-command diagnostics retain their established English copy.
+CLI instructions, headings, prompts, and diagnostics are in English. Installed
+course titles, goals, instructions, hints, reflection choices, and targeted
+feedback retain the bundle's published English text. Help/version and the
+original Task 1 missing/unknown command diagnostics retain their established copy.
+The previous Russian CLI-owned human text changed to English; command names,
+stable IDs, exit codes, and saved formats did not change.
 
 Human views, previews, and prompts go to stdout; failure diagnostics go to
 stderr in expected/observed/next-action form. Default output contains no stack
@@ -79,10 +82,13 @@ progress or journals are preserved and return code 3.
 The command still prints the exact transition preview. Interactive `next` displays numbered
 choices, maps the selected number to the stable ID, gives targeted wrong-answer
 feedback, and offers a retry. No full-screen TUI is used. Prompts accept
-`да`/`д`/`yes`/`y` as confirmation; other values or EOF decline. Input lines are
+`yes`/`y` as confirmation; legacy `да`/`д` input remains accepted. Other values
+or EOF decline. Input lines are
 bounded to 256 characters, and reflection interaction stops after 32 steps.
 Color is emitted only for an actual/injected interactive terminal and disabled
-by `--no-color`.
+by `--no-color`. The compact lesson summary uses a green success line, a bold
+lesson heading and action labels, and a cyan next command. Redirected output
+has the same words and spacing without ANSI sequences.
 
 Cancellation during workspace discovery, start preparation/resume, or saved-state
 reads is not an unsafe-workspace diagnosis. Direct or wrapped interrupted I/O,
@@ -93,8 +99,14 @@ failed use-case result to cancellation when its thread remains interrupted;
 an already completed successful result keeps code 0. Interactive cancellation
 does not offer a retry/confirmation prompt or read further input.
 
-Start prints the active lesson and first-commit/public-GitHub instructions.
-GitHub remains optional and never causes network access or CLI authentication.
+Successful `start` and lesson advancement print a compact active-lesson summary
+with its goal, suggested commit, and `fruit-and-faults lesson` as the next
+command. The first lesson summary points to the optional GitHub guide without
+duplicating its procedure. `lesson` reads validated saved progress and prints
+the active installed instructions and suggested commit without writing state,
+running a build, or revealing future lessons. A completed route reports no
+active lesson. GitHub remains optional and never causes network access or CLI
+authentication.
 `status` reports cheap artifact presence, hint level, local Git facts, remote
 advice, continuation availability, and exactly one recommended next command.
 `list` exposes titles/states only. See the [check](lesson-check-contract.md),

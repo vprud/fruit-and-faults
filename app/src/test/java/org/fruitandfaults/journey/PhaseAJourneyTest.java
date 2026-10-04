@@ -36,11 +36,11 @@ class PhaseAJourneyTest {
     assertArrayEquals(opening, fixture.progressBytes());
     assertFalse(Files.exists(fixture.root().resolve("build/test-results/test")));
     for (int level = 1; level <= 3; level++) {
-      assertTrue(fixture.run("hint").out().contains("Подсказка " + level + "/3"));
+      assertTrue(fixture.run("hint").out().contains("Hint " + level + "/3"));
       assertEquals(level, fixture.progress().lessons().getFirst().hintLevel());
     }
     byte[] hints = fixture.progressBytes();
-    assertTrue(fixture.run("hint").out().contains("Подсказка 3/3"));
+    assertTrue(fixture.run("hint").out().contains("Hint 3/3"));
     assertArrayEquals(hints, fixture.progressBytes());
 
     List<String> answers =
@@ -55,7 +55,7 @@ class PhaseAJourneyTest {
       byte[] beforeCheck = fixture.progressBytes();
       var checked = fixture.run("check");
       assertEquals(0, checked.code(), checked.err());
-      assertTrue(checked.out().contains("Проверка пройдена"));
+      assertTrue(checked.out().contains("Check passed"));
       assertEquals(counts.get(lesson), LearnerJourneyFixture.passingTestCount(fixture.root()));
       assertArrayEquals(beforeCheck, fixture.progressBytes());
       String head = fixture.commit("feat(game): finish lesson " + (lesson + 1));
@@ -67,7 +67,7 @@ class PhaseAJourneyTest {
       }
       var next = fixture.run("next", "--answer", answers.get(lesson), "--yes");
       assertEquals(0, next.code(), next.err());
-      assertTrue(next.out().contains("Предпросмотр:"));
+      assertTrue(next.out().contains("Preview:"));
       assertTrue(next.out().contains("origin"), next.out());
       assertEquals(head, fixture.git("rev-parse", "HEAD").strip());
       assertEquals(
@@ -83,13 +83,13 @@ class PhaseAJourneyTest {
         assertTrue(fixture.git("status", "--porcelain=v1").contains("progress.json"));
         assertFalse(Files.exists(fixture.root().resolve(".fruit-and-faults/transition.json")));
       } else {
-        assertTrue(next.out().contains("Курс завершён"));
-        assertTrue(next.out().contains("финальный коммит метаданных"), next.out());
+        assertTrue(next.out().contains("Course complete"));
+        assertTrue(next.out().contains("final metadata commit"), next.out());
       }
     }
     assertTrue(fixture.progress().activeLessonId().isEmpty());
-    assertTrue(fixture.run("status").out().contains("финальный коммит метаданных"));
-    assertEquals(4, fixture.run("list").out().split("завершён", -1).length - 1);
+    assertTrue(fixture.run("status").out().contains("final metadata commit"));
+    assertEquals(4, fixture.run("list").out().split("completed", -1).length - 1);
     for (var lesson : fixture.catalog().load().lessons()) {
       for (var asset : lesson.assets()) {
         if (asset.policy() == AssetPolicy.IMMUTABLE_CHECK) {

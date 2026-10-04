@@ -156,9 +156,9 @@ final class PhaseAJourneyFixture {
 
   void assertSafeFailure(Transcript result, int code) {
     assertEquals(code, result.code(), result.out() + result.err());
-    assertTrue(result.err().contains("Ожидалось:"), result.err());
-    assertTrue(result.err().contains("Получено:"), result.err());
-    assertTrue(result.err().contains("Дальше:"), result.err());
+    assertTrue(result.err().contains("Expected:"), result.err());
+    assertTrue(result.err().contains("Observed:"), result.err());
+    assertTrue(result.err().contains("Next:"), result.err());
     assertFalse(result.err().contains(parent.toString()), result.err());
     assertFalse(result.err().contains("\tat "), result.err());
     assertFalse(result.err().contains("Exception in thread"), result.err());

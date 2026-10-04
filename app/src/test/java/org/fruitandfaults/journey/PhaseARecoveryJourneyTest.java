@@ -58,7 +58,7 @@ class PhaseARecoveryJourneyTest {
             });
     var status = fixture.run(fixture.root(), () -> application, "status");
     assertEquals(0, status.code(), status.err());
-    assertTrue(status.out().contains("Доступно продолжение курса"));
+    assertTrue(status.out().contains("A course continuation is available"));
     assertArrayEquals(oldState, fixture.progressBytes());
     var next = fixture.run(fixture.root(), () -> application, "next", "--yes");
     assertEquals(0, next.code(), next.err());
@@ -142,7 +142,7 @@ class PhaseARecoveryJourneyTest {
     assertArrayEquals(owned, Files.readAllBytes(manifest));
     var recovered = fixture.run(fixture.root(), () -> application, "next", "--yes");
     assertEquals(0, recovered.code(), recovered.err());
-    assertTrue(recovered.out().contains("Предпросмотр:"));
+    assertTrue(recovered.out().contains("Preview:"));
     assertEquals(
         intended,
         new AtomicProgressRepository(new JacksonProgressCodec(updated))
@@ -377,7 +377,7 @@ class PhaseARecoveryJourneyTest {
       assertTrue(Files.exists(fixture.root().resolve(".fruit-and-faults/transition.json")));
       var recovered = fixture.run("next", "--answer", "compile-before-tests", "--yes");
       assertEquals(0, recovered.code(), recovered.err());
-      assertTrue(recovered.out().contains("Предпросмотр:"));
+      assertTrue(recovered.out().contains("Preview:"));
     }
     assertEquals(intended, fixture.progress());
     assertEquals(head, fixture.git("rev-parse", "HEAD").strip());

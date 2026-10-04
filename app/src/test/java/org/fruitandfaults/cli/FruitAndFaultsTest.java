@@ -22,6 +22,7 @@ class FruitAndFaultsTest {
         status             Show current lesson and progress
         check              Validate the current lesson
         hint               Show the next hint
+        lesson             Show the active lesson instructions
         next               Advance after completing the current lesson
         list               Show the course route
 
@@ -82,7 +83,7 @@ class FruitAndFaultsTest {
   }
 
   @ParameterizedTest
-  @ValueSource(strings = {"start", "status", "check", "hint", "next", "list"})
+  @ValueSource(strings = {"start", "status", "check", "hint", "lesson", "next", "list"})
   void courseCommandsRequireTheirWorkspaceOrExplicitInvocation(String command) {
     Invocation invocation = run(command);
 

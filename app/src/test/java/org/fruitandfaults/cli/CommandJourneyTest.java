@@ -59,8 +59,8 @@ class CommandJourneyTest {
     var created = run(factory, parent, false, "", "--no-color", "start", root.toString(), "--yes");
     assertEquals(0, created.code());
     assertTrue(created.out().contains("First Run and Diagnostics"));
-    assertTrue(created.out().contains("публичный репозиторий"));
-    assertTrue(created.out().contains("git commit"));
+    assertTrue(created.out().contains("Next:             fruit-and-faults lesson"));
+    assertTrue(created.out().contains("Suggested commit: fix: repair starter compilation"));
     assertTrue(created.out().contains("docs/publishing-to-github.md"));
     assertEquals("", created.err());
     byte[] state = Files.readAllBytes(root.resolve(".fruit-and-faults/progress.json"));
@@ -68,13 +68,51 @@ class CommandJourneyTest {
     assertArrayEquals(state, Files.readAllBytes(root.resolve(".fruit-and-faults/progress.json")));
     Path nested = root.resolve("src/main/java");
     var status = run(factory, nested, false, "", "status");
+    var lesson = run(factory, nested, false, "", "lesson");
+    assertEquals(0, lesson.code());
+    assertTrue(lesson.out().contains("Compilation must succeed before tests can execute."));
+    assertTrue(lesson.out().contains("Suggested commit: fix: repair starter compilation"));
+    assertFalse(lesson.out().matches("(?s).*[А-Яа-яЁё].*"));
+    assertArrayEquals(state, Files.readAllBytes(root.resolve(".fruit-and-faults/progress.json")));
     assertEquals(0, status.code());
-    assertEquals(1, status.out().split("Следующая команда:", -1).length - 1);
+    assertEquals(1, status.out().split("Next command:", -1).length - 1);
     assertTrue(status.out().contains("fruit-and-faults check"));
     assertFalse(status.out().contains(root.toString()));
     assertFalse(status.out().contains("\u001b"));
     assertEquals(0, run(factory, nested, false, "", "list").code());
     assertEquals(0, run(factory, nested, false, "", "hint").code());
+  }
+
+  @Test
+  void lessonRejectsMalformedProgressWithoutChangingIt() throws IOException {
+    var fixture = new Fixture(temporary.toRealPath());
+    assertEquals(0, fixture.run("start", fixture.root.toString(), "--yes").code());
+    Path progress = fixture.root.resolve(".fruit-and-faults/progress.json");
+    Files.writeString(progress, "{SECRET}");
+
+    var result = fixture.run("lesson");
+
+    assertEquals(3, result.code());
+    assertEquals("", result.out());
+    assertTrue(
+        result.err().contains("Observed: Saved progress is missing, malformed, or incompatible."));
+    assertFalse(result.err().contains("SECRET"));
+    assertEquals("{SECRET}", Files.readString(progress));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"да", "д"})
+  void englishConfirmationPromptStillAcceptsLegacyRussianYesInput(String answer)
+      throws IOException {
+    Path parent = temporary.toRealPath();
+    Path root = parent.resolve("legacy-confirmation");
+
+    var result =
+        run(ApplicationFactory::create, parent, true, answer + "\n", "start", root.toString());
+
+    assertEquals(0, result.code(), result.err());
+    assertTrue(result.out().contains("Create workspace? [yes/no]: "));
+    assertTrue(result.out().contains("Workspace created."));
   }
 
   @Test
@@ -88,10 +126,10 @@ class CommandJourneyTest {
     fixture.outcome = new CheckOutcome.Passed(List.of());
     assertEquals(0, fixture.run("check").code());
     for (int level = 1; level <= 3; level++) {
-      assertTrue(fixture.run("hint").out().contains("Подсказка " + level + "/3"));
+      assertTrue(fixture.run("hint").out().contains("Hint " + level + "/3"));
     }
     byte[] hints = fixture.state();
-    assertTrue(fixture.run("hint").out().contains("Подсказка 3/3"));
+    assertTrue(fixture.run("hint").out().contains("Hint 3/3"));
     assertArrayEquals(hints, fixture.state());
     var incorrect = fixture.run("next", "--answer", "assertion-first", "--yes");
     assertEquals(1, incorrect.code());
@@ -109,17 +147,18 @@ class CommandJourneyTest {
       String answer = fixture.catalog.load().lessons().get(index).question().correctOptionId();
       var advanced = fixture.run("next", "--answer", answer, "--yes");
       assertEquals(0, advanced.code(), advanced.err());
-      assertTrue(advanced.out().contains("Предпросмотр:"));
-      if (index < 3) assertTrue(advanced.out().contains("Урок:"));
-      else assertTrue(advanced.out().contains("Курс завершён"));
+      assertTrue(advanced.out().contains("Preview:"));
+      if (index < 3) assertTrue(advanced.out().contains("LESSON ·"));
+      else assertTrue(advanced.out().contains("Course complete"));
     }
     byte[] complete = fixture.state();
     assertEquals(0, fixture.run("next", "--answer", "moves-only", "--yes").code());
     assertArrayEquals(complete, fixture.state());
     var route = fixture.run("list");
-    assertEquals(4, route.out().split("завершён", -1).length - 1);
+    assertEquals(4, route.out().split("completed", -1).length - 1);
+    assertEquals("Course complete. No lesson is active.\n", fixture.run("lesson").out());
     assertEquals(0, fixture.run("hint").code());
-    assertTrue(fixture.run("check").out().contains("Активного урока нет; проверки не запускались"));
+    assertTrue(fixture.run("check").out().contains("No active lesson; checks were not run"));
   }
 
   @Test
@@ -139,12 +178,12 @@ class CommandJourneyTest {
             () -> fixture.application,
             fixture.root,
             true,
-            wrong + "\nда\n" + correct + "\nда\n",
+            wrong + "\nyes\n" + correct + "\nyes\n",
             "next",
             "--no-color");
     assertEquals(0, result.code(), result.err());
-    assertTrue(result.out().contains("Повторить? [да/нет]: "));
-    assertTrue(result.out().contains("Применить изменения? [да/нет]: "));
+    assertTrue(result.out().contains("Try again? [yes/no]: "));
+    assertTrue(result.out().contains("Apply changes? [yes/no]: "));
     assertTrue(result.out().contains("  1. "));
     assertFalse(result.out().contains("\u001b"));
   }
@@ -198,8 +237,8 @@ class CommandJourneyTest {
     byte[] before = Files.readAllBytes(root.resolve(".fruit-and-faults/progress.json"));
     var result = run(() -> application, root, true, "malformed\nнет\n", "next", "--no-color");
     assertEquals(1, result.code());
-    assertTrue(result.out().contains("Повторить? [да/нет]: "));
-    assertFalse(result.out().contains("Предпросмотр:"));
+    assertTrue(result.out().contains("Try again? [yes/no]: "));
+    assertFalse(result.out().contains("Preview:"));
     assertArrayEquals(before, Files.readAllBytes(root.resolve(".fruit-and-faults/progress.json")));
   }
 
@@ -335,6 +374,7 @@ class CommandJourneyTest {
               Thread.currentThread().interrupt();
               return new HintResult.Unavailable(FailureCategory.WORKSPACE_CONFLICT, diagnostic);
             },
+            original.lesson(),
             request -> {
               Thread.currentThread().interrupt();
               return new AdvanceResult.Incorrect("unsafe");
@@ -354,10 +394,10 @@ class CommandJourneyTest {
       var result = run(() -> interrupted, fixture.root, command.equals("next"), "", args);
       assertEquals(5, result.code());
       assertEquals("", result.out());
-      assertTrue(result.err().contains("прерван"));
-      assertTrue(result.err().contains("повторите"));
+      assertTrue(result.err().contains("interrupted"));
+      assertTrue(result.err().contains("retry"));
       assertFalse(result.err().contains("unsafe"));
-      assertFalse(result.err().contains("небезопас"));
+      assertFalse(result.err().contains("unsafe workspace"));
       assertFalse(result.err().contains("PRIVATE"));
       assertTrue(Thread.currentThread().isInterrupted());
       Thread.interrupted();
@@ -383,13 +423,14 @@ class CommandJourneyTest {
               return new CheckOutcome.Passed(List.of());
             },
             original.hint(),
+            original.lesson(),
             original.next(),
             original.list());
     try {
       var result = run(() -> completed, fixture.root, false, "", "check");
       assertEquals(0, result.code());
       assertEquals("", result.err());
-      assertTrue(result.out().contains("Проверка пройдена"));
+      assertTrue(result.out().contains("Check passed"));
       assertTrue(Thread.currentThread().isInterrupted());
     } finally {
       Thread.interrupted();
