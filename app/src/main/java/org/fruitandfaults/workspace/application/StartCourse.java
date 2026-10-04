@@ -18,6 +18,7 @@ import org.fruitandfaults.progress.domain.CourseProgress;
 import org.fruitandfaults.validation.domain.FailureCategory;
 import org.fruitandfaults.workspace.domain.DisclosurePlan;
 import org.fruitandfaults.workspace.domain.ManagedFiles;
+import org.fruitandfaults.workspace.domain.TransitionJournal;
 import org.fruitandfaults.workspace.domain.WorkspaceMetadata;
 import org.fruitandfaults.workspace.domain.WorkspacePath;
 
@@ -179,6 +180,25 @@ public final class StartCourse {
           "Incomplete state has no recovery journal; preserve it and inspect the course metadata.",
           List.of(root.resolve(".fruit-and-faults")));
     }
+    if (pending.isPresent()) {
+      TransitionJournal journal = pending.orElseThrow();
+      if (!isInitialDisclosure(journal)) {
+        return conflict(
+            root,
+            "Pending disclosure is not this installation's initial start transaction; preserve its journal and files, and use fruit-and-faults next with the matching installation to recover advancement.",
+            List.of(root.resolve(".fruit-and-faults/transition.json")));
+      }
+      boolean committed = current.equals(Optional.of(journal.intendedProgress()));
+      boolean published = managed.equals(Optional.of(journal.intendedManaged()));
+      if ((current.isPresent() && !committed)
+          || (managed.isPresent() && !published)
+          || (committed && !published)) {
+        return conflict(
+            root,
+            "Initial disclosure conflicts with its progress or ownership snapshots; preserve the journal and restore the matching state before retrying start.",
+            List.of(root.resolve(".fruit-and-faults")));
+      }
+    }
     List<Path> invalid = invalidAssetPaths(root);
     if (!invalid.isEmpty()) {
       return conflict(
@@ -220,7 +240,7 @@ public final class StartCourse {
       }
       DisclosureResult applied =
           pending.isPresent()
-              ? disclosure.recover(root)
+              ? disclosure.recover(root, pending.orElseThrow())
               : disclosure.apply(
                   root,
                   firstLesson(),
@@ -242,6 +262,14 @@ public final class StartCourse {
 
   private Lesson firstLesson() {
     return course.lessons().getFirst();
+  }
+
+  private boolean isInitialDisclosure(TransitionJournal journal) {
+    return journal.fromLessonId().isEmpty()
+        && journal.expectedProgress().isEmpty()
+        && journal.expectedManaged().isEmpty()
+        && journal.toLessonId().equals(firstLesson().id())
+        && journal.intendedProgress().equals(CourseProgress.opening(course, null));
   }
 
   private List<Path> invalidAssetPaths(Path root) {

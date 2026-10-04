@@ -35,7 +35,10 @@ the ownership manifest, and progress. Git owns the contents of the listed
 `.git` directory. Interactive confirmation and non-interactive `--yes` are
 delivery concerns; the application applies changes only when `confirmed` is
 true. Resuming committed state needs no confirmation because it writes nothing.
-Recovering pending disclosure requires a preview and confirmation.
+Recovering an eligible initial disclosure requires a preview and confirmation.
+An ordinary lesson-transition or append-continuation journal instead returns a
+conflict with guidance to run `next`; confirmation cannot authorize `start` to
+bypass advancement's reflection, ownership, or opening-HEAD gates.
 
 Initialization order is destination creation, local `git init`, exclusive
 workspace marker creation, then the existing lesson disclosure transaction.
@@ -75,7 +78,17 @@ If Git initialization fails, no course-owned state has been written; the
 directory and any Git files remain. If disclosure fails, the Git repository
 and marker remain, and the journal attributes any completed asset writes.
 Progress is committed only after the full disclosure and manifest are valid.
-Repeating a confirmed start recovers a matching pending journal. Malformed
+Repeating a confirmed start recovers only the exact validated initial lesson-one
+journal for this installation: it has no source lesson, absent prior progress
+and ownership, the installed opening progress with no completed route or opening
+revision, and matching asset declarations. Current progress and ownership must
+be absent or equal the intended initial snapshots; committed progress requires
+the intended manifest. Initial creation records no opening HEAD because it
+completes no lesson. Recovery revalidates repository identity immediately before
+disclosure and is bound to the inspected journal, so replacing that plan during
+the final observation conflicts rather than changing what `start` publishes.
+Ordinary transitions and appended continuations must be recovered with `next`,
+even when their progress has already committed. Malformed
 markers, changed learner files, or state conflicts remain untouched and require
 explicit inspection. An uninitialized directory containing only Git files is
 still nonempty and rejected; initialization failure does not authorize cleanup.

@@ -14,6 +14,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.fruitandfaults.course.application.CourseAssets;
 import org.fruitandfaults.course.domain.Course;
@@ -29,6 +30,7 @@ import org.fruitandfaults.validation.domain.FailureCategory;
 import org.fruitandfaults.workspace.domain.DisclosurePlan;
 import org.fruitandfaults.workspace.domain.ManagedFile;
 import org.fruitandfaults.workspace.domain.ManagedFiles;
+import org.fruitandfaults.workspace.domain.TransitionJournal;
 import org.fruitandfaults.workspace.domain.WorkspacePath;
 import org.fruitandfaults.workspace.infra.JacksonManagedFilesRepository;
 import org.fruitandfaults.workspace.infra.JacksonTransitionJournalRepository;
@@ -545,6 +547,97 @@ class StartCourseTest {
     assertInstanceOf(StartResult.Resumed.class, recovered.execute(new StartRequest(target, true)));
     assertTrue(journals.load(target).isEmpty());
     assertTrue(progress.load(target).isPresent());
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"opening-revision", "prior-ownership"})
+  void startRejectsInitialLookingJournalThatWasNotItsOwnAbsentStateDisclosure(String changed)
+      throws IOException {
+    assertInstanceOf(
+        StartResult.Failed.class,
+        start(catalog, new FailingFiles(files), new ProcessGitRepository())
+            .execute(new StartRequest(target, true)));
+    var original = journals.load(target).orElseThrow();
+    var prior =
+        changed.equals("prior-ownership")
+            ? Optional.of(ManagedFiles.empty())
+            : Optional.<ManagedFiles>empty();
+    var replacement =
+        new TransitionJournal(
+            original.formatVersion(),
+            original.fromLessonId(),
+            original.toLessonId(),
+            original.assets(),
+            original.expectedManifestVersion(),
+            prior,
+            original.expectedProgress(),
+            changed.equals("opening-revision")
+                ? CourseProgress.opening(course, "b".repeat(40))
+                : original.intendedProgress());
+    if (prior.isPresent()) manifests.save(target, prior.orElseThrow());
+    journals.remove(target, original);
+    journals.create(target, replacement);
+    Path journal = target.resolve(".fruit-and-faults/transition.json");
+    byte[] pending = Files.readAllBytes(journal);
+    byte[] learner = Files.readAllBytes(target.resolve("src/Raw.txt"));
+    var result =
+        assertInstanceOf(
+            StartResult.Conflict.class,
+            start(catalog, files, new ProcessGitRepository())
+                .execute(new StartRequest(target, true)));
+    assertTrue(result.diagnostic().contains("next"));
+    assertArrayEquals(pending, Files.readAllBytes(journal));
+    assertArrayEquals(learner, Files.readAllBytes(target.resolve("src/Raw.txt")));
+    assertTrue(progress.load(target).isEmpty());
+    assertEquals(prior, manifests.load(target));
+    assertFalse(Files.exists(target.resolve("src/Template.txt")));
+  }
+
+  @Test
+  void journalReplacementDuringFinalGitObservationCannotChangeInitialRecovery() throws IOException {
+    assertInstanceOf(
+        StartResult.Failed.class,
+        start(catalog, new FailingFiles(files), new ProcessGitRepository())
+            .execute(new StartRequest(target, true)));
+    var original = journals.load(target).orElseThrow();
+    var replacement =
+        new TransitionJournal(
+            original.formatVersion(),
+            original.fromLessonId(),
+            original.toLessonId(),
+            original.assets(),
+            original.expectedManifestVersion(),
+            original.expectedManaged(),
+            original.expectedProgress(),
+            CourseProgress.opening(course, "b".repeat(40)));
+    byte[] learner = Files.readAllBytes(target.resolve("src/Raw.txt"));
+    var observations = new AtomicInteger();
+    var actualGit = new ProcessGitRepository();
+    GitRepository replacing =
+        new GitRepository() {
+          @Override
+          public void initialize(Path root) {
+            throw new AssertionError("Recovery must not initialize Git.");
+          }
+
+          @Override
+          public void requireInitialized(Path root) throws IOException {
+            actualGit.requireInitialized(root);
+            if (observations.incrementAndGet() == 2) {
+              journals.remove(root, original);
+              journals.create(root, replacement);
+            }
+          }
+        };
+    assertInstanceOf(
+        StartResult.Conflict.class,
+        start(catalog, files, replacing).execute(new StartRequest(target, true)));
+    assertEquals(2, observations.get());
+    assertEquals(Optional.of(replacement), journals.load(target));
+    assertArrayEquals(learner, Files.readAllBytes(target.resolve("src/Raw.txt")));
+    assertTrue(progress.load(target).isEmpty());
+    assertTrue(manifests.load(target).isEmpty());
+    assertFalse(Files.exists(target.resolve("src/Template.txt")));
   }
 
   @ParameterizedTest

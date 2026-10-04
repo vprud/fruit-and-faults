@@ -40,6 +40,11 @@ current lesson; it cannot complete it using the prior lesson's answer.
 
 ## Recovery
 
+`start` is not an alternate advancement-recovery command. It recovers only its
+own initial lesson-one transaction and rejects ordinary transition and appended
+continuation journals without mutation. Use `next` for the following gates,
+including after manifest or progress publication.
+
 A pending journal is handled before current-lesson checks and the normal clean
 worktree gate: disclosed files and progress can already account for dirty state.
 It requires exact prior or intended progress/ownership and verifies that prior

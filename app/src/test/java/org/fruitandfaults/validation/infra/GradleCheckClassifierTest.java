@@ -185,6 +185,34 @@ class GradleCheckClassifierTest {
             .anyMatch(diagnostic -> diagnostic.observed().contains("truncated")));
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = {"truncated", "unknown-exit", "output-failure"})
+  void directsBuildOutputInspectionToTheLocalWrapperWithoutPromisingVerboseCapture(String kind) {
+    ProcessResult result =
+        kind.equals("output-failure")
+            ? new ProcessResult.Failed(
+                ProcessResult.FailureReason.OUTPUT_FAILURE, "SECRET", ProcessResult.Output.empty())
+            : new ProcessResult.Exited(
+                1, new ProcessResult.Output("tail", "", kind.equals("truncated"), false));
+    var outcome = assertInstanceOf(CheckOutcome.Failed.class, classifier.classify(result));
+    var diagnostic =
+        kind.equals("truncated")
+            ? outcome.diagnostics().getLast()
+            : outcome.diagnostics().getFirst();
+    assertEquals(
+        switch (kind) {
+          case "truncated" ->
+              "Rerun the local wrapper test command with --offline and the prepared Gradle user home to inspect complete build output.";
+          case "unknown-exit" ->
+              "Inspect the local wrapper and Java toolchain; rerun the wrapper test command with --offline and the prepared Gradle user home for build output.";
+          default ->
+              "Inspect the local toolchain and rerun the local wrapper test command with --offline and the prepared Gradle user home for build output.";
+        },
+        diagnostic.nextAction());
+    assertFalse(outcome.diagnostics().toString().contains("--verbose"));
+    assertFalse(outcome.diagnostics().toString().contains("SECRET"));
+  }
+
   @Test
   void distinguishesTimeoutInterruptionAndLaunchFailureFromLearnerFailures() {
     assertCategory(
