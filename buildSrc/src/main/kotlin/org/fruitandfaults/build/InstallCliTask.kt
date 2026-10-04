@@ -10,12 +10,12 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.COPY_ATTRIBUTES
 import java.nio.file.attribute.BasicFileAttributes
-import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
 
 /** Installs only a validated distribution and removes exact, manifest-owned regular entries. */
 class CliInstaller(
+    private val fileReader: InstallerFileReader = InstallerFileReader(),
     private val copyFile: (Path, Path) -> Unit = { from, to ->
         Files.copy(from, to, COPY_ATTRIBUTES)
         Unit
@@ -31,6 +31,7 @@ class CliInstaller(
         version: String,
         force: Boolean = true,
     ) {
+        validateWindowsRoot(target.platform, target.root)
         safePath(target.root)
         check(target.root != target.home && target.root.parent != null && !target.home.startsWith(target.root)) { "Unsafe install root." }
         require(version.matches(Regex("[A-Za-z0-9][A-Za-z0-9.+_-]{0,99}"))) { "Invalid CLI version." }
@@ -49,7 +50,6 @@ class CliInstaller(
         val stage = Files.createTempDirectory(target.root.parent, ".fruit-and-faults-stage-")
         val stageIdentity = Files.readAttributes(stage, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()
         var backup: Path? = null
-        var published = false
         try {
             for (directory in source.directories.sortedBy { it.length }) Files.createDirectories(stage.resolve(directory))
             for (name in source.files.keys) {
@@ -66,17 +66,79 @@ class CliInstaller(
                 move(target.root, backup)
             }
             try {
-                move(stage, target.root)
-                published = true
+                publishClaimed(stage, target.root)
             } catch (failure: Exception) {
                 if (backup != null && !Files.exists(target.root, NOFOLLOW_LINKS)) move(backup, target.root)
                 throw failure
             }
             if (backup != null) deleteOwned(backup, old!!, target.root)
         } finally {
-            if (!published && Files.exists(stage, NOFOLLOW_LINKS)) {
+            if (Files.exists(stage, NOFOLLOW_LINKS)) {
                 deleteStaging(stage, stageIdentity, source.files.keys + source.directories + MARKER)
             }
+        }
+    }
+
+    /** CREATE_DIRECTORY is the exclusive claim; atomic rename may replace an existing target. */
+    private fun publishClaimed(
+        stage: Path,
+        root: Path,
+    ) {
+        Files.createDirectory(root)
+        val rootKey = Files.readAttributes(root, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()
+        check(rootKey != null) { "Provider cannot identify the claimed directory. Preserve it and choose another location." }
+        val keys = linkedMapOf<Path, Any>(root to rootKey)
+        val hashes = linkedMapOf<Path, String>()
+        var complete = false
+        try {
+            val markerFile = root.resolve(MARKER)
+            Files.copy(stage.resolve(MARKER), markerFile, COPY_ATTRIBUTES)
+            keys[markerFile] = checkNotNull(Files.readAttributes(markerFile, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
+            hashes[markerFile] = hash(stage.resolve(MARKER))
+            val tree = snapshot(stage, true)
+            for (directory in tree.directories.sortedBy { it.length }) {
+                checkClaim(keys)
+                val path = Files.createDirectory(root.resolve(directory))
+                keys[path] = checkNotNull(Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
+            }
+            for ((name, entry) in tree.files) {
+                checkClaim(keys)
+                val path = root.resolve(name)
+                copyFile(stage.resolve(name), path)
+                keys[path] = checkNotNull(Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
+                hashes[path] = entry.hash
+            }
+            checkClaim(keys)
+            owned(root)
+            check(hash(markerFile) == hashes[markerFile]) { "Claim marker changed before publication." }
+            complete = true
+        } finally {
+            if (!complete) cleanupClaim(keys, hashes)
+        }
+    }
+
+    private fun checkClaim(keys: Map<Path, Any>) {
+        for ((path, key) in keys) {
+            safePath(path)
+            check(Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey() == key) {
+                "Claimed installation entry was replaced. Preserve it before retrying."
+            }
+        }
+    }
+
+    private fun cleanupClaim(
+        keys: Map<Path, Any>,
+        hashes: Map<Path, String>,
+    ) {
+        val root = keys.keys.first()
+        if (!Files.isDirectory(root, NOFOLLOW_LINKS) || Files.isSymbolicLink(root)) return
+        val entries = Files.walk(root).use { it.toList() }
+        if (entries.toSet() != keys.keys || entries.any { Files.isSymbolicLink(it) }) return
+        if (entries.any { Files.readAttributes(it, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey() != keys[it] }) return
+        if (hashes.any { (path, expected) -> hash(path) != expected }) return
+        for (path in entries.sortedByDescending { it.nameCount }) {
+            checkClaim(keys.filterKeys { Files.exists(it, NOFOLLOW_LINKS) })
+            Files.delete(path)
         }
     }
 
@@ -85,6 +147,7 @@ class CliInstaller(
     }
 
     fun uninstall(target: InstallLayout) {
+        validateWindowsRoot(target.platform, target.root)
         safePath(target.root)
         if (!Files.exists(target.root, NOFOLLOW_LINKS)) return
         val installation = owned(target.root)
@@ -118,8 +181,7 @@ class CliInstaller(
         check(Files.isRegularFile(markerFile, NOFOLLOW_LINKS) && !Files.isSymbolicLink(markerFile)) {
             "Expected an owned installation marker at $markerFile. Preserve the directory or choose another install root."
         }
-        check(Files.size(markerFile) <= 1_048_576) { "Oversized installation marker." }
-        val bytes = Files.readAllBytes(markerFile)
+        val bytes = fileReader.read(markerFile)
         val lines = bytes.toString(Charsets.UTF_8).split('\n')
         check(lines.take(3) == listOf("formatVersion=1", "application=fruit-and-faults", "root=" + encode(identityRoot.toString()))) {
             "Invalid or incompatible installation marker. No files removed."
@@ -226,7 +288,7 @@ class CliInstaller(
             safePath(root.resolve(directory))
             Files.delete(root.resolve(directory))
         }
-        check(Files.readAllBytes(root.resolve(MARKER)).contentEquals(expected.bytes)) { "Marker identity changed during removal." }
+        check(fileReader.read(root.resolve(MARKER)).contentEquals(expected.bytes)) { "Marker identity changed during removal." }
         Files.delete(root.resolve(MARKER))
         Files.delete(root)
     }
@@ -265,18 +327,7 @@ class CliInstaller(
         }
     }
 
-    private fun hash(path: Path): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        Files.newInputStream(path, NOFOLLOW_LINKS).use { input ->
-            val buffer = ByteArray(8192)
-            var count = input.read(buffer)
-            while (count >= 0) {
-                digest.update(buffer, 0, count)
-                count = input.read(buffer)
-            }
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
-    }
+    private fun hash(path: Path): String = fileReader.hash(path)
 
     private fun encode(text: String): String = Base64.getUrlEncoder().withoutPadding().encodeToString(text.toByteArray(Charsets.UTF_8))
 

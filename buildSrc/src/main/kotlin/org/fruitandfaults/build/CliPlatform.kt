@@ -38,13 +38,14 @@ enum class CliPlatform {
                     }
 
                     LINUX -> {
-                        (xdgData ?: userHome.resolve(".local/share")).resolve("fruit-and-faults")
+                        (xdgData?.takeIf { it.isAbsolute } ?: userHome.resolve(".local/share")).resolve("fruit-and-faults")
                     }
                 },
             )
         require(root != userHome && root.parent != null && root.nameCount > 1 && !userHome.startsWith(root)) {
             "Install root must be a dedicated directory, never the home directory or its ancestor."
         }
+        validateWindowsRoot(this, root)
         val profileName =
             when (Path.of(shell.ifBlank { "unknown" }).fileName.toString()) {
                 "zsh" -> if (this == MACOS) ".zprofile" else ".zshrc"
@@ -68,7 +69,7 @@ enum class CliPlatform {
             require(path.isAbsolute) { "Installer paths must be absolute." }
             require(path.none { it.toString() == ".." }) { "Installer paths must not contain '..'." }
             require(
-                path.toString().none { it == '\u0000' || it == '\r' || it == '\n' },
+                path.toString().none { it.isISOControl() },
             ) { "Installer paths must not contain control characters." }
             return path.normalize()
         }
@@ -82,6 +83,17 @@ data class InstallLayout(
     val command: Path,
     val profile: Path?,
 )
+
+/** Windows user PATH uses unquoted semicolon-separated entries. */
+internal fun validateWindowsRoot(
+    platform: CliPlatform,
+    root: Path,
+) {
+    CliPlatform.absolute(root)
+    require(platform != CliPlatform.WINDOWS || root.toString().none { it == ';' || it == '"' }) {
+        "Windows install roots must not contain semicolons, quotes, or control characters. Choose a dedicated PATH-safe directory."
+    }
+}
 
 /** Check every existing component without following symbolic links. */
 internal fun safePath(path: Path) {

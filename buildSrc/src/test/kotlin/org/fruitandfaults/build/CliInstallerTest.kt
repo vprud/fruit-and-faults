@@ -50,6 +50,36 @@ class CliInstallerTest {
         assertThrows(IllegalArgumentException::class.java) { CliPlatform.detect("Plan 9") }
     }
 
+    @Test fun `relative XDG data home uses the default Linux root`() {
+        val home = temp.resolve("linux-home")
+        assertEquals(
+            home.resolve(".local/share/fruit-and-faults"),
+            CliPlatform.LINUX.layout(home, null, Path.of("relative-data"), "/bin/bash").root,
+        )
+        assertEquals(
+            home.resolve(".local/share/fruit-and-faults"),
+            CliPlatform.LINUX.layout(home, null, Path.of(""), "/bin/bash").root,
+        )
+    }
+
+    @Test fun `Windows delimiter roots are rejected before installation or PATH mutation`() {
+        for (unsafe in listOf("install;foreign", "install\"quoted", "install\tcontrol")) {
+            val home = temp.resolve("windows-home")
+            val root = temp.resolve(unsafe)
+            assertThrows(IllegalArgumentException::class.java) {
+                CliPlatform.WINDOWS.layout(home, temp.resolve("App Data"), null, "", root)
+            }
+            val bypass = InstallLayout(CliPlatform.WINDOWS, home, root, home.resolve(".local/bin/fruit-and-faults"), null)
+            val store = MemoryPath("C:\\Unrelated")
+            assertThrows(IllegalArgumentException::class.java) { CliInstaller().install(distribution(unsafe), bypass, "0.1.0") }
+            assertThrows(IllegalArgumentException::class.java) { CliPathExposure(store).add(bypass, "") }
+            assertThrows(IllegalArgumentException::class.java) { CliPathExposure(store).remove(bypass) }
+            assertThrows(IllegalArgumentException::class.java) { CliInstaller().uninstall(bypass) }
+            assertEquals("C:\\Unrelated", store.value)
+            assertFalse(Files.exists(root, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+        }
+    }
+
     @Test fun `install update repeat and uninstall own only the marked distribution`() {
         val target = layout()
         val installer = CliInstaller()
@@ -290,16 +320,23 @@ class CliInstallerTest {
         Files.createDirectories(profile.parent)
         val bytes = byteArrayOf(0xff.toByte(), 0x80.toByte(), '\n'.code.toByte())
         Files.write(profile, bytes)
+        val supportsPosix = Files.getFileAttributeView(profile, java.nio.file.attribute.PosixFileAttributeView::class.java) != null
         val permissions =
-            java.nio.file.attribute.PosixFilePermissions
-                .fromString("rw-r--r--")
-        Files.setPosixFilePermissions(profile, permissions)
+            if (supportsPosix) {
+                java.nio.file.attribute.PosixFilePermissions
+                    .fromString("rw-r--r--")
+            } else {
+                null
+            }
+        if (permissions != null) Files.setPosixFilePermissions(profile, permissions)
         val exposure = CliPathExposure(MemoryPath(""))
         exposure.add(target, "")
-        assertEquals(permissions, Files.getPosixFilePermissions(profile))
+        assertTrue(Files.isSymbolicLink(target.command))
+        if (permissions != null) assertEquals(permissions, Files.getPosixFilePermissions(profile))
         exposure.remove(target)
         assertArrayEquals(bytes, Files.readAllBytes(profile))
-        assertEquals(permissions, Files.getPosixFilePermissions(profile))
+        assertFalse(Files.exists(target.command, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+        if (permissions != null) assertEquals(permissions, Files.getPosixFilePermissions(profile))
     }
 
     @Test fun `truncated process output cannot become authoritative PATH or version`() {
@@ -384,6 +421,91 @@ class CliInstallerTest {
         assertFalse(Files.exists(target.root))
     }
 
+    @Test fun `initial publication preserves foreign targets created while staging`() {
+        for (kind in listOf("empty", "file", "symlink")) {
+            val target = layout().copy(root = temp.resolve("install-$kind"))
+            var identity: Any? = null
+            var appeared = false
+            val installer =
+                CliInstaller { source, destination ->
+                    if (!appeared) {
+                        when (kind) {
+                            "empty" -> Files.createDirectory(target.root)
+                            "file" -> Files.writeString(target.root, "foreign content")
+                            else -> Files.createSymbolicLink(target.root, temp.resolve("outside-$kind"))
+                        }
+                        identity =
+                            Files
+                                .readAttributes(
+                                    target.root,
+                                    java.nio.file.attribute.BasicFileAttributes::class.java,
+                                    java.nio.file.LinkOption.NOFOLLOW_LINKS,
+                                ).fileKey()
+                        appeared = true
+                    }
+                    Files.copy(source, destination)
+                    Unit
+                }
+            assertThrows(java.nio.file.FileAlreadyExistsException::class.java) {
+                installer.install(distribution(kind), target, "0.1.0", false)
+            }
+            assertEquals(
+                identity,
+                Files
+                    .readAttributes(
+                        target.root,
+                        java.nio.file.attribute.BasicFileAttributes::class.java,
+                        java.nio.file.LinkOption.NOFOLLOW_LINKS,
+                    ).fileKey(),
+            )
+            when (kind) {
+                "empty" -> Files.list(target.root).use { assertEquals(0L, it.count()) }
+                "file" -> assertEquals("foreign content", Files.readString(target.root))
+                else -> assertEquals(temp.resolve("outside-$kind"), Files.readSymbolicLink(target.root))
+            }
+        }
+    }
+
+    @Test fun `failed claimed publication restores the previous owned installation`() {
+        val target = layout()
+        CliInstaller().install(distribution(), target, "0.1.0")
+        val marker = Files.readAllBytes(target.root.resolve(CliInstaller.MARKER))
+        val failing =
+            CliInstaller { source, destination ->
+                if (source.parent.parent.fileName
+                        .toString()
+                        .startsWith(".fruit-and-faults-stage-")
+                ) {
+                    throw java.io.IOException("injected publication copy failure")
+                }
+                Files.copy(source, destination)
+                Unit
+            }
+        assertThrows(java.io.IOException::class.java) { failing.install(distribution("update"), target, "0.2.0") }
+        assertArrayEquals(marker, Files.readAllBytes(target.root.resolve(CliInstaller.MARKER)))
+        assertEquals("jar-one", Files.readString(target.root.resolve("lib/app.jar")))
+        CliInstaller().validate(target)
+    }
+
+    @Test fun `failed publication retains a claim containing unknown foreign state`() {
+        val target = layout()
+        val failing =
+            CliInstaller { source, destination ->
+                if (source.parent.parent.fileName
+                        .toString()
+                        .startsWith(".fruit-and-faults-stage-")
+                ) {
+                    Files.writeString(target.root.resolve("foreign.txt"), "preserve")
+                    throw java.io.IOException("injected foreign publication state")
+                }
+                Files.copy(source, destination)
+                Unit
+            }
+        assertThrows(java.io.IOException::class.java) { failing.install(distribution(), target, "0.1.0") }
+        assertEquals("preserve", Files.readString(target.root.resolve("foreign.txt")))
+        assertTrue(Files.exists(target.root.resolve(CliInstaller.MARKER)))
+    }
+
     @Test fun `real owned process bounds output and reports nonzero exit`() {
         val runner = BoundedCommandRunner(5)
         val output = runner.run(probeArguments("output"), emptyMap())
@@ -393,6 +515,112 @@ class CliInstallerTest {
         val failed = runner.run(probeArguments("failure"), emptyMap())
         assertEquals(7, failed.exitCode)
         assertTrue(failed.output.contains("fixture failure"))
+    }
+
+    @Test fun `special ownership files are rejected without blocking the task process`() {
+        org.junit.jupiter.api.Assumptions
+            .assumeFalse(System.getProperty("os.name").startsWith("Windows"))
+        for (kind in listOf("command-marker", "windows-marker", "windows-store", "windows-store-write", "install-marker", "profile")) {
+            val platform = if (kind.startsWith("windows")) CliPlatform.WINDOWS else CliPlatform.MACOS
+            val target = layout(platform).copy(root = temp.resolve("fifo-install-$kind"))
+            val path =
+                when (kind) {
+                    "command-marker" -> target.command.resolveSibling(".fruit-and-faults-command.properties")
+                    "windows-marker" -> target.root.resolveSibling(".${target.root.fileName}-path.properties")
+                    "windows-store", "windows-store-write" -> temp.resolve("fifo-user-path")
+                    "install-marker" -> target.root.resolve(CliInstaller.MARKER)
+                    else -> target.profile!!
+                }
+            Files.createDirectories(path.parent)
+            val makeFifo = ProcessBuilder(listOf("mkfifo", path.toString())).start()
+            try {
+                assertTrue(makeFifo.waitFor(3, java.util.concurrent.TimeUnit.SECONDS))
+                assertEquals(0, makeFifo.exitValue())
+            } finally {
+                if (makeFifo.isAlive) makeFifo.destroyForcibly()
+            }
+            val arguments = probeArguments("ownership-read", path.toString()) + listOf(kind, target.home.toString(), target.root.toString())
+            val result = BoundedCommandRunner(2).run(arguments, emptyMap())
+            assertFalse(result.timedOut, "$kind must reject before blocking")
+            assertEquals(0, result.exitCode, result.output)
+            assertEquals("rejected", result.output)
+            assertFalse(Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+            Files.delete(path)
+        }
+    }
+
+    @Test fun `bounded ownership reads preserve bytes and reject replacement identity`() {
+        val path = temp.resolve("opaque-state")
+        val bytes = byteArrayOf(0xff.toByte(), 0, '\r'.code.toByte(), '\n'.code.toByte())
+        Files.write(path, bytes)
+        assertArrayEquals(bytes, InstallerFileReader().read(path, 4))
+        assertThrows(IllegalStateException::class.java) { InstallerFileReader().read(path, 3) }
+        val realRunner = BoundedCommandRunner(5, 2_097_152)
+        val substituted =
+            InstallerFileReader(
+                CommandRunner { arguments, environment ->
+                    val result = realRunner.run(arguments, environment)
+                    Files.move(path, temp.resolve("original-state"))
+                    Files.write(path, bytes)
+                    result
+                },
+            )
+        assertThrows(IllegalStateException::class.java) { substituted.read(path) }
+        assertArrayEquals(bytes, Files.readAllBytes(path))
+        assertArrayEquals(bytes, Files.readAllBytes(temp.resolve("original-state")))
+    }
+
+    @Test fun `inventory hashes use bounded reads without exposing large file content`() {
+        val path = temp.resolve("inventory.jar")
+        val bytes = ByteArray(2 * 1_048_576) { 0x61 }
+        Files.write(path, bytes)
+        val expected =
+            java.security.MessageDigest
+                .getInstance("SHA-256")
+                .digest(bytes)
+                .joinToString("") { "%02x".format(it) }
+        assertEquals(expected, InstallerFileReader().hash(path))
+        val realRunner = BoundedCommandRunner(5, 2_097_152)
+        val replaced =
+            InstallerFileReader(
+                CommandRunner { arguments, environment ->
+                    val result = realRunner.run(arguments, environment)
+                    assertEquals(64, result.output.length)
+                    Files.move(path, temp.resolve("retained-inventory.jar"))
+                    Files.write(path, bytes)
+                    result
+                },
+            )
+        assertThrows(IllegalStateException::class.java) { replaced.hash(path) }
+        assertArrayEquals(bytes, Files.readAllBytes(path))
+    }
+
+    @Test fun `a blocked ownership worker cannot block its parent`() {
+        org.junit.jupiter.api.Assumptions
+            .assumeFalse(System.getProperty("os.name").startsWith("Windows"))
+        val path = temp.resolve("read-race")
+        Files.writeString(path, "old")
+        val pidFile = temp.resolve("blocked-reader.pid")
+        val reader =
+            InstallerFileReader(
+                CommandRunner { _, _ ->
+                    Files.move(path, temp.resolve("retained-read-race"))
+                    val fifo = ProcessBuilder(listOf("mkfifo", path.toString())).start()
+                    try {
+                        check(fifo.waitFor(3, java.util.concurrent.TimeUnit.SECONDS) && fifo.exitValue() == 0)
+                    } finally {
+                        if (fifo.isAlive) fifo.destroyForcibly()
+                    }
+                    BoundedCommandRunner(2).run(probeArguments("blocked-read", path.toString()) + pidFile.toString(), emptyMap())
+                },
+            )
+        assertThrows(IllegalStateException::class.java) { reader.read(path) }
+        val pid = Files.readString(pidFile).toLong()
+        ProcessHandle.of(pid).ifPresent { it.onExit().get(3, java.util.concurrent.TimeUnit.SECONDS) }
+        assertFalse(ProcessHandle.of(pid).map { it.isAlive }.orElse(false))
+        assertFalse(Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+        assertEquals("old", Files.readString(temp.resolve("retained-read-race")))
+        Files.delete(path)
     }
 
     @Test fun `real process timeout terminates the owned process without sleeps`() {
@@ -462,12 +690,17 @@ class CliInstallerTest {
                 kotlin.Unit::class.java.protectionDomain.codeSource.location
                     .toURI(),
             )
+        val mainClasses =
+            Path.of(
+                CliInstaller::class.java.protectionDomain.codeSource.location
+                    .toURI(),
+            )
         return listOf(
             executable.toString(),
             "-Duser.home=$temp",
             "-XX:-UsePerfData",
             "-cp",
-            "$classes${java.io.File.pathSeparator}$kotlin",
+            "$classes${java.io.File.pathSeparator}$mainClasses${java.io.File.pathSeparator}$kotlin",
             InstallerProbeFixture::class.java.name,
             mode,
             path,
@@ -504,6 +737,42 @@ object InstallerProbeFixture {
                 Files.writeString(pending, ProcessHandle.current().pid().toString())
                 Files.move(pending, ready, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
                 while (true) Thread.onSpinWait()
+            }
+
+            "ownership-read" -> {
+                val path = Path.of(arguments[1])
+                val kind = arguments[2]
+                val platform = if (kind.startsWith("windows")) CliPlatform.WINDOWS else CliPlatform.MACOS
+                val target = platform.layout(Path.of(arguments[3]), null, null, "/bin/zsh", Path.of(arguments[4]))
+                val pathStore =
+                    object : UserPathStore {
+                        override fun read() = "C:\\Unrelated"
+
+                        override fun write(value: String) = error("Unexpected write")
+                    }
+                try {
+                    when (kind) {
+                        "windows-store" -> FileUserPathStore(path).read()
+                        "windows-store-write" -> FileUserPathStore(path).write("C:\\Replacement")
+                        "install-marker" -> CliInstaller().validate(target)
+                        else -> CliPathExposure(pathStore).add(target, "")
+                    }
+                    System.out.print("accepted")
+                } catch (_: IllegalStateException) {
+                    System.out.print("rejected")
+                }
+            }
+
+            "blocked-read" -> {
+                Files.writeString(Path.of(arguments[2]), ProcessHandle.current().pid().toString())
+                Files
+                    .newByteChannel(
+                        Path.of(arguments[1]),
+                        setOf(
+                            java.nio.file.StandardOpenOption.READ,
+                            java.nio.file.LinkOption.NOFOLLOW_LINKS,
+                        ),
+                    ).use { it.read(java.nio.ByteBuffer.allocate(1)) }
             }
         }
     }

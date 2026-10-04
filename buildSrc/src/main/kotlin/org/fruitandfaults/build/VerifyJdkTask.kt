@@ -30,6 +30,7 @@ fun interface CommandRunner {
 /** Owns one process, a bounded output collector, and a deadline including collector cleanup. */
 class BoundedCommandRunner(
     private val timeoutSeconds: Long = 15,
+    private val outputLimit: Int = 16_384,
 ) : CommandRunner {
     override fun run(
         arguments: List<String>,
@@ -49,6 +50,7 @@ class BoundedCommandRunner(
     ): ProbeResult {
         check(!Thread.currentThread().isInterrupted) { "Verification interrupted. Retry the task." }
         require(timeoutSeconds in 1..60)
+        require(outputLimit in 1..2_097_152)
         val builder = ProcessBuilder(arguments).redirectErrorStream(true)
         if (directory != null) builder.directory(directory.toFile())
         builder.environment().putAll(environment)
@@ -73,7 +75,7 @@ class BoundedCommandRunner(
                     var count = stream.read(buffer)
                     while (count >= 0) {
                         synchronized(bytes) {
-                            val retained = minOf(count, 16_384 - bytes.size())
+                            val retained = minOf(count, outputLimit - bytes.size())
                             if (retained < count) truncated.set(true)
                             bytes.write(buffer, 0, retained)
                         }

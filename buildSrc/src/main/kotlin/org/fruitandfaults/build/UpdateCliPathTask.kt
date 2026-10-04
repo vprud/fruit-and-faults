@@ -19,14 +19,16 @@ interface UserPathStore {
 
 class FileUserPathStore(
     private val path: Path,
+    private val reader: InstallerFileReader = InstallerFileReader(),
 ) : UserPathStore {
     override fun read(): String {
         safePath(path)
-        return if (Files.exists(path, NOFOLLOW_LINKS)) Files.readString(path) else ""
+        return if (Files.exists(path, NOFOLLOW_LINKS)) reader.text(path) else ""
     }
 
     override fun write(value: String) {
         safePath(path)
+        if (Files.exists(path, NOFOLLOW_LINKS)) reader.read(path)
         atomicFile(path, value.toByteArray(Charsets.UTF_8))
     }
 }
@@ -65,6 +67,7 @@ class WindowsUserPathStore(
 /** Owns only the matching command marker and its exact marked profile block/PATH entry. */
 class CliPathExposure(
     private val windowsPath: UserPathStore,
+    private val reader: InstallerFileReader = InstallerFileReader(),
 ) {
     private val begin = "# >>> fruit-and-faults >>>"
     private val end = "# <<< fruit-and-faults <<<"
@@ -73,12 +76,13 @@ class CliPathExposure(
         target: InstallLayout,
         currentPath: String,
     ): String {
+        validateWindowsRoot(target.platform, target.root)
         if (target.platform == CliPlatform.WINDOWS) {
             val marker = pathMarker(target)
             safePath(marker)
             val bin = target.root.resolve("bin").toString()
             val ownership = owner(target)
-            if (Files.exists(marker, NOFOLLOW_LINKS)) check(Files.readString(marker) == ownership) { "Foreign PATH ownership marker." }
+            if (Files.exists(marker, NOFOLLOW_LINKS)) check(reader.text(marker) == ownership) { "Foreign PATH ownership marker." }
             val original = windowsPath.read()
             val entries = original.split(';').toMutableList()
             val matching = entries.indices.filter { windowsKey(entries[it]) == windowsKey(bin) }
@@ -150,6 +154,7 @@ class CliPathExposure(
     }
 
     fun validateRemoval(target: InstallLayout) {
+        validateWindowsRoot(target.platform, target.root)
         if (target.platform == CliPlatform.WINDOWS) {
             val marker = pathMarker(target)
             safePath(marker)
@@ -158,7 +163,7 @@ class CliPathExposure(
                     NOFOLLOW_LINKS,
                 )
             ) {
-                check(Files.readString(marker) == owner(target)) { "Foreign PATH marker; no user PATH change." }
+                check(reader.text(marker) == owner(target)) { "Foreign PATH marker; no user PATH change." }
             }
         } else {
             safePath(target.command.parent)
@@ -244,10 +249,7 @@ class CliPathExposure(
     private fun readProfile(profile: Path): ByteArray {
         safePath(profile)
         if (!Files.exists(profile, NOFOLLOW_LINKS)) return ByteArray(0)
-        check(
-            Files.isRegularFile(profile, NOFOLLOW_LINKS) && Files.size(profile) <= 1_048_576,
-        ) { "Profile must be a regular file under 1 MiB." }
-        return Files.readAllBytes(profile)
+        return reader.read(profile)
     }
 
     private fun profileBlock(
@@ -265,7 +267,7 @@ class CliPathExposure(
     ) {
         safePath(marker)
         if (Files.exists(marker, NOFOLLOW_LINKS)) {
-            check(Files.readString(marker) == owner(target)) { "Foreign command ownership marker." }
+            check(reader.text(marker) == owner(target)) { "Foreign command ownership marker." }
             check(
                 !Files.exists(target.command, NOFOLLOW_LINKS) ||
                     (
@@ -303,7 +305,9 @@ internal fun atomicFile(
     path: Path,
     bytes: ByteArray,
 ) {
+    require(bytes.size <= 1_048_576) { "Installer state must remain under 1 MiB." }
     safePath(path)
+    val before = if (Files.exists(path, NOFOLLOW_LINKS)) installerFileStamp(path) else null
     val permissions =
         if (Files.exists(
                 path,
@@ -331,6 +335,9 @@ internal fun atomicFile(
         }
         if (permissions != null) Files.setPosixFilePermissions(temp, permissions)
         safePath(path)
+        check(if (before == null) !Files.exists(path, NOFOLLOW_LINKS) else installerFileStamp(path) == before) {
+            "Installer state changed during write. Preserve it and retry."
+        }
         try {
             Files.move(temp, path, ATOMIC_MOVE, REPLACE_EXISTING)
         } catch (_: java.nio.file.AtomicMoveNotSupportedException) {

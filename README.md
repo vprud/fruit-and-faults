@@ -59,7 +59,8 @@ Uninstall from the source repository with `./gradlew uninstallCli -PcliForce=tru
 Check that `java -version` and `javac -version` report 26, then run
 `./gradlew setupCli` in the source repository. The distribution goes to
 `$XDG_DATA_HOME/fruit-and-faults` when XDG_DATA_HOME is set to an absolute path,
-otherwise `~/.local/share/fruit-and-faults`. The command is linked from
+otherwise `~/.local/share/fruit-and-faults` (blank/relative values are ignored).
+The command is linked from
 `~/.local/bin/fruit-and-faults`. Bash uses `~/.bashrc`; zsh uses `~/.zshrc`.
 Open a new terminal and run `fruit-and-faults --version`.
 
@@ -98,6 +99,9 @@ PATH observation; `-PcliUserPathFile=...` redirects Windows user PATH to a
 regular test file instead of the registry. Use the same overrides on setup and
 uninstall. Profiles and all existing installer path components must be regular
 paths, not symlinks. Custom install roots must be dedicated directories.
+Windows install roots cannot contain semicolons, quotes, or control characters.
+Ownership markers, profiles, and redirected PATH state must be regular files
+under 1 MiB; bounded read workers reject substituted or special files safely.
 
 Native platform evidence and the temporary-root smoke recipe are recorded in
 [the installation smoke matrix](docs/testing/phase-a-installation-smoke.md).
