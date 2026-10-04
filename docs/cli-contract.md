@@ -61,8 +61,11 @@ remain in the [workspace contract](workspace-start-format.md).
 Without an actual terminal (`Console.isTerminal` on Java 26), the CLI never
 reads stdin or prompts, even when redirected input contains bytes. Fresh start
 prints a validated preview and requires `--yes`; a compatible read-only start
-resume needs no confirmation. Noninteractive `next` requires `--yes` before
-composition. An active lesson also requires a stable option ID in `--answer`:
+resume needs no confirmation. Pending initial lesson-one disclosure can be
+confirmed and recovered with `start`; an ordinary transition or appended
+continuation returns conflict 3 without mutation and must be recovered with
+`next`. Noninteractive `next` requires `--yes` before composition. An active
+lesson also requires a stable option ID in `--answer`:
 when it is absent, the application validates progress, ownership, and any
 pending journal and returns a typed question; CLI renders usage code 2 before
 lesson checks, Git inspection, or mutation. An ordinary pending transition

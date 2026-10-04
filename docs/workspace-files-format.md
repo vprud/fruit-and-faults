@@ -105,11 +105,24 @@ state; do not repeatedly reinstall or delete learner files to bypass it. A
 deterministic JDK ZIP-provider test proves refusal before learner publication,
 without pretending to be a native Windows smoke run.
 
-Creation, writes, replacement, and cleanup use the captured parent directory
-handle. Directory identities are checked before and after these operations.
-Replacing the parent pathname cannot redirect an asset write or metadata move to
-an outside directory; the operation reports the changed workspace as a failure.
-This boundary is intended for local learner experimentation.
+Learner asset file creation/writes, manifest file reads/publication/replacement,
+and journal file reads/creation/exact-plan deletion use verified secure directory
+handles. Directory and entry identity checks surround these operations. Once the
+parent handle is captured, replacing its pathname cannot redirect those file
+operations to the replacement directory; changed identities cause failure.
+
+These guarantees do not cover every workspace operation. Missing parent
+directories are created by pathname with surrounding identity checks, not through
+a captured secure handle. Progress reads, temporary creation/writes, and final
+replacement also use validated pathnames rather than directory-relative handles.
+Progress attempts atomic replacement but retains a non-atomic replacement fallback
+when the provider does not support it; identity-aware cleanup preserves ambiguous
+temporaries. Concurrent ancestor replacement can race these pathname operations,
+so checks do not establish adversarial confinement or globally atomic publication
+for directory creation and progress. These are accepted local-snapshot/provider
+limitations, not guarantees equivalent to the anchored asset/manifest/journal
+boundary. The workspace is intended for local learner experimentation, not as an
+OS security sandbox.
 
 ## Disclosure transactions and recovery
 
@@ -141,6 +154,15 @@ fields, coercions, trailing documents, incompatible course content, and invalid
 transitions. Malformed and future versions remain untouched and produce a typed
 diagnostic. Repair or restore the journal, or install compatible course content,
 before retrying; the CLI does not silently replace it.
+
+`start` recovers only its own initial lesson-one disclosure: the validated plan
+must have absent prior progress and ownership, no source lesson, and the exact
+installed initial progress/assets. Current progress and ownership must be absent
+or their intended initial snapshots. It binds recovery to the inspected journal
+and revalidates the local repository before invoking disclosure. Ordinary lesson
+transitions and appended continuations are preserved and rejected by `start`,
+including after manifest or progress publication; use `next` under the
+[advance contract](lesson-advance-contract.md) instead.
 
 An append-compatible transition can retain an older content version in
 `expectedProgress` and commit the installed version in `intendedProgress`.

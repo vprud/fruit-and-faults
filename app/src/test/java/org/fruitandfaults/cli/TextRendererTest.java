@@ -96,6 +96,29 @@ class TextRendererTest {
   }
 
   @Test
+  void startConflictPreservesApplicationRecoveryGuidanceWithoutRecommendingStartAgain() {
+    Path root = Path.of("workspace").toAbsolutePath();
+    var result =
+        new TextRenderer(false, false)
+            .start(
+                new StartResult.Conflict(
+                    root,
+                    "Preserve pending advancement and recover with fruit-and-faults next.",
+                    List.of(root.resolve(".fruit-and-faults/transition.json"))),
+                false);
+    assertEquals(3, result.exitCode().value());
+    assertEquals("", result.stdout());
+    assertTrue(result.stderr().contains("fruit-and-faults next"));
+    assertTrue(
+        result
+            .stderr()
+            .endsWith(
+                "Дальше: Сохраните свои файлы, проверьте указанные пути и следуйте указаниям выше.\n"));
+    assertFalse(result.stderr().contains("повторите start"));
+    assertFalse(result.stderr().contains(root.toString()));
+  }
+
+  @Test
   void reflectionDisplaysNumberedStableChoicesWithoutGradingData() throws IOException {
     var question =
         new AdvanceResult.NeedsAnswer(

@@ -58,7 +58,7 @@ public final class GradleCheckClassifier {
           new Diagnostic(
               "Complete build output within the capture budget.",
               "Build output was truncated; only bounded stream tails were retained.",
-              "Use check --verbose to inspect the retained output, or rerun the wrapper locally."));
+              "Rerun the local wrapper test command with --offline and the prepared Gradle user home to inspect complete build output."));
     }
     switch (result) {
       case ProcessResult.TimedOut timeout -> addCleanup(diagnostics, timeout.cleanup());
@@ -119,7 +119,7 @@ public final class GradleCheckClassifier {
         "Gradle failed with exit code "
             + result.exitCode()
             + " without recognizable learner-failure evidence.",
-        "Inspect the local wrapper and Java toolchain, then use check --verbose for retained diagnostics.");
+        "Inspect the local wrapper and Java toolchain; rerun the wrapper test command with --offline and the prepared Gradle user home for build output.");
   }
 
   private static CheckOutcome classifyFailure(ProcessResult.FailureReason reason) {
@@ -141,7 +141,7 @@ public final class GradleCheckClassifier {
               FailureCategory.INTERNAL_ERROR,
               "Reliable process output.",
               "The validation process output could not be collected.",
-              "Inspect the local toolchain and run check again with --verbose.");
+              "Inspect the local toolchain and rerun the local wrapper test command with --offline and the prepared Gradle user home for build output.");
       case CLEANUP_FAILURE ->
           failure(
               FailureCategory.INTERNAL_ERROR,

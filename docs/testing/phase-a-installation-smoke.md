@@ -225,3 +225,18 @@ unchanged installer verification (41 passing results, up-to-date), and 87.67%
 line coverage. Both distribution tasks and the generated Unix help/version
 passed again; resource/dependency/sh/bat inspection remained unchanged. No
 native installer smoke or Windows/Linux execution was added in this round.
+
+Task 14 review fix round 2 verified that start cannot recover ordinary or
+append-continuation journals, including after a learner HEAD change or state
+publication; next retains its own recovery gates. All fifteen initial lesson-one
+disclosure crash boundaries still recover under start, and replacement during
+the final Git observation conflicts without mutation. The expanded focused suite
+passed 255 tests; a separate renderer/recovery rerun passed 24. Serial full
+`check` passed in 4m01s with 734 app tests (47 journeys), zero failures/errors/
+skips, unchanged installer verification (41 passing up-to-date results), and
+87.73% line coverage. Both distribution tasks passed again; ZIP/JAR course and
+dependency contents, Unix/Windows launcher main/classpath wiring, Unix syntax,
+and generated Unix help/version were verified. No test-only journey/solution
+entries are packaged. The Windows launcher remains inspected only; no native
+installer smoke, user-state mutation, or Windows/Linux runtime evidence was
+added. The Windows provider acceptance blocker remains open.

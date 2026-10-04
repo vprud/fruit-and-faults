@@ -3,6 +3,7 @@ package org.fruitandfaults.journey;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -13,12 +14,18 @@ import java.util.Optional;
 
 import org.fruitandfaults.cli.JourneyApplications;
 import org.fruitandfaults.course.infra.LearnerJourneyFixture;
+import org.fruitandfaults.git.infra.ProcessGitRepository;
+import org.fruitandfaults.progress.domain.CourseProgress;
 import org.fruitandfaults.progress.infra.AtomicProgressRepository;
 import org.fruitandfaults.progress.infra.JacksonProgressCodec;
 import org.fruitandfaults.workspace.application.DiscloseLesson;
+import org.fruitandfaults.workspace.application.StartRequest;
+import org.fruitandfaults.workspace.application.StartResult;
+import org.fruitandfaults.workspace.domain.WorkspaceMetadata;
 import org.fruitandfaults.workspace.infra.JacksonManagedFilesRepository;
 import org.fruitandfaults.workspace.infra.JacksonTransitionJournalRepository;
 import org.fruitandfaults.workspace.infra.SafeWorkspaceFiles;
+import org.fruitandfaults.workspace.infra.SafeWorkspaceSetup;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.ResourceLock;
@@ -115,6 +122,18 @@ class PhaseARecoveryJourneyTest {
               throw new AssertionError(
                   "Continuation recovery must not check new or historical work.");
             });
+    var refused =
+        assertInstanceOf(
+            StartResult.Conflict.class,
+            application.start().apply(new StartRequest(fixture.root(), true)));
+    assertTrue(refused.diagnostic().contains("next"));
+    fixture.assertSafeFailure(
+        fixture.run(
+            fixture.parent(), () -> application, "start", fixture.root().toString(), "--yes"),
+        3);
+    assertArrayEquals(pending, Files.readAllBytes(journal));
+    assertArrayEquals(saved, fixture.progressBytes());
+    assertArrayEquals(owned, Files.readAllBytes(manifest));
     fixture.assertSafeFailure(
         fixture.run(fixture.root(), () -> application, "next", "--answer", "arbitrary", "--yes"),
         3);
@@ -144,6 +163,123 @@ class PhaseARecoveryJourneyTest {
     assertArrayEquals(disclosed, Files.readAllBytes(manifest));
     assertFalse(Files.exists(journal));
     assertFalse(Files.exists(fixture.root().resolve("build")));
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void startCannotBypassPendingLessonAdvancementOrItsOriginalOpeningHead(boolean changedHead)
+      throws Exception {
+    var fixture = new PhaseAJourneyFixture(temporary);
+    assertEquals(
+        0, fixture.run(fixture.parent(), "start", fixture.root().toString(), "--yes").code());
+    fixture.solve(0);
+    String opening = fixture.commit("fix(game): before pending lesson transition");
+    var before = fixture.progress();
+    var intended =
+        before
+            .advance(before.activeLessonId().orElseThrow(), "compile-before-tests", opening)
+            .progress();
+    assertThrows(
+        IOException.class,
+        () ->
+            JourneyCrashes.disclosure(fixture, "asset-1")
+                .apply(
+                    fixture.root(),
+                    fixture.catalog().load().lessons().get(1),
+                    new JacksonManagedFilesRepository().load(fixture.root()),
+                    Optional.of(before),
+                    intended));
+    String current =
+        changedHead
+            ? fixture.commit("chore(game): learner checkpoint during pending transition")
+            : opening;
+    Path journal = fixture.root().resolve(".fruit-and-faults/transition.json");
+    Path manifest = fixture.root().resolve(".fruit-and-faults/managed-files.json");
+    Path asset = fixture.root().resolve(PhaseAJourneyFixture.MAIN + "Direction.java");
+    byte[] pending = Files.readAllBytes(journal);
+    byte[] saved = fixture.progressBytes();
+    byte[] owned = Files.readAllBytes(manifest);
+    byte[] published = Files.readAllBytes(asset);
+    String gitState = fixture.git("status", "--porcelain=v1");
+    if (changedHead)
+      fixture.assertSafeFailure(
+          fixture.run("next", "--answer", "compile-before-tests", "--yes"), 3);
+    for (boolean confirmed : new boolean[] {true, false}) {
+      var refused =
+          confirmed
+              ? fixture.run(fixture.parent(), "start", fixture.root().toString(), "--yes")
+              : fixture.run(fixture.parent(), "start", fixture.root().toString());
+      fixture.assertSafeFailure(refused, 3);
+      assertTrue(refused.err().contains("next"));
+      assertArrayEquals(pending, Files.readAllBytes(journal));
+      assertArrayEquals(saved, fixture.progressBytes());
+      assertArrayEquals(owned, Files.readAllBytes(manifest));
+      assertArrayEquals(published, Files.readAllBytes(asset));
+      assertEquals(current, fixture.git("rev-parse", "HEAD").strip());
+      assertEquals(gitState, fixture.git("status", "--porcelain=v1"));
+      assertFalse(
+          Files.exists(fixture.root().resolve(PhaseAJourneyFixture.MAIN + "Coordinate.java")));
+    }
+    if (!changedHead) {
+      assertEquals(0, fixture.run("next", "--answer", "compile-before-tests", "--yes").code());
+      assertFalse(Files.exists(journal));
+      assertEquals(opening, fixture.progress().activeLessonOpenedAtRevision().orElseThrow());
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "journal",
+        "asset-1",
+        "asset-2",
+        "asset-3",
+        "asset-4",
+        "asset-5",
+        "asset-6",
+        "asset-7",
+        "asset-8",
+        "asset-9",
+        "asset-10",
+        "manifest",
+        "progress",
+        "remove",
+        "removed"
+      })
+  void startStillRecoversEveryInitialDisclosureBoundaryAndRepeatedStartIsReadOnly(String boundary)
+      throws Exception {
+    var fixture = new PhaseAJourneyFixture(temporary);
+    var setup = new SafeWorkspaceSetup();
+    setup.createDirectory(fixture.root());
+    new ProcessGitRepository().initialize(fixture.root());
+    setup.createMetadata(fixture.root(), new WorkspaceMetadata(fixture.catalog().load().id(), 1));
+    var intended = CourseProgress.opening(fixture.catalog().load(), null);
+    assertThrows(
+        IOException.class,
+        () ->
+            JourneyCrashes.disclosure(fixture, boundary)
+                .apply(
+                    fixture.root(),
+                    fixture.catalog().load().lessons().getFirst(),
+                    Optional.empty(),
+                    Optional.empty(),
+                    intended));
+    var recovered = fixture.run(fixture.parent(), "start", fixture.root().toString(), "--yes");
+    assertEquals(0, recovered.code(), recovered.err());
+    assertEquals(intended, fixture.progress());
+    assertEquals(
+        10, new JacksonManagedFilesRepository().load(fixture.root()).orElseThrow().files().size());
+    assertFalse(Files.exists(fixture.root().resolve(".fruit-and-faults/transition.json")));
+    assertEquals("", fixture.git("rev-list", "--all"));
+    for (var asset : fixture.catalog().load().lessons().getFirst().assets())
+      assertArrayEquals(
+          fixture.catalog().load(asset),
+          Files.readAllBytes(fixture.root().resolve(asset.relativePath())));
+    byte[] saved = fixture.progressBytes();
+    assertEquals(0, fixture.run(fixture.parent(), "start", fixture.root().toString()).code());
+    assertArrayEquals(saved, fixture.progressBytes());
+    assertFalse(
+        Files.exists(fixture.root().resolve(PhaseAJourneyFixture.MAIN + "Coordinate.java")));
   }
 
   @Test

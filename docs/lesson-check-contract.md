@@ -73,3 +73,13 @@ Failure categories distinguish `INCOMPLETE_WORK`, `WORKSPACE_CONFLICT`,
 `MISSING_ARTIFACT`, `COMPILATION_ERROR`, `TEST_FAILURE`, `TIMEOUT`, `INTERRUPTED`,
 and `INTERNAL_ERROR`. Timeout and interruption retain their process-runner
 meaning. Failed checks never advance progress.
+
+`check --verbose` adds failure categories and bounded cause identities; it does
+not print retained Gradle stdout/stderr, learner exception messages, or stack
+traces. To inspect full build output, run the local workspace wrapper's `test`
+task with `--offline --no-daemon --console=plain` and an explicit
+`--gradle-user-home` pointing to the same prepared cache used by the CLI. Verify
+that the exact wrapper distribution is already cached before running it:
+`--offline` alone does not prevent wrapper bootstrap downloads. Local wrapper
+output and reports can contain learner source or local paths; review them locally
+and redact sensitive details before sharing diagnostics.
