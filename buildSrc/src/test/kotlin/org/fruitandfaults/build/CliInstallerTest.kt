@@ -63,7 +63,7 @@ class CliInstallerTest {
     }
 
     @Test fun `Windows delimiter roots are rejected before installation or PATH mutation`() {
-        for (unsafe in listOf("install;foreign", "install\"quoted", "install\tcontrol")) {
+        for (unsafe in listOf("install;foreign")) {
             val home = temp.resolve("windows-home")
             val root = temp.resolve(unsafe)
             assertThrows(IllegalArgumentException::class.java) {
@@ -71,12 +71,24 @@ class CliInstallerTest {
             }
             val bypass = InstallLayout(CliPlatform.WINDOWS, home, root, home.resolve(".local/bin/fruit-and-faults"), null)
             val store = MemoryPath("C:\\Unrelated")
-            assertThrows(IllegalArgumentException::class.java) { CliInstaller().install(distribution(unsafe), bypass, "0.1.0") }
+            assertThrows(
+                IllegalArgumentException::class.java,
+            ) { CliInstaller().install(distribution("valid-windows-fixture"), bypass, "0.1.0") }
             assertThrows(IllegalArgumentException::class.java) { CliPathExposure(store).add(bypass, "") }
             assertThrows(IllegalArgumentException::class.java) { CliPathExposure(store).remove(bypass) }
             assertThrows(IllegalArgumentException::class.java) { CliInstaller().uninstall(bypass) }
             assertEquals("C:\\Unrelated", store.value)
             assertFalse(Files.exists(root, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+        }
+    }
+
+    @Test fun `raw Windows quote and control rejection does not depend on native path parsing`() {
+        for (raw in listOf("install;foreign", "install\"quoted", "install\tcontrol", "install\u0000nul")) {
+            assertThrows(IllegalArgumentException::class.java) { validateWindowsRootText(raw) }
+            assertThrows(IllegalArgumentException::class.java) {
+                val root = temp.resolve(raw)
+                CliPlatform.WINDOWS.layout(temp.resolve("valid-home"), temp.resolve("valid-app-data"), null, "", root)
+            }
         }
     }
 
@@ -595,6 +607,197 @@ class CliInstallerTest {
         assertArrayEquals(bytes, Files.readAllBytes(path))
     }
 
+    @Test fun `post hash FIFO copy failure preserves source and previous installation`() {
+        org.junit.jupiter.api.Assumptions
+            .assumeFalse(System.getProperty("os.name").startsWith("Windows"))
+        for (update in listOf(false, true)) {
+            val target = layout().copy(root = temp.resolve(if (update) "update-copy-root" else "initial-copy-root"))
+            val source = distribution(if (update) "copy-update" else "copy-initial")
+            val oldMarker =
+                if (update) {
+                    CliInstaller().install(distribution("old-copy"), target, "0.1.0")
+                    Files.readAllBytes(target.root.resolve(CliInstaller.MARKER))
+                } else {
+                    null
+                }
+            var replaced: Path? = null
+            var retained: Path? = null
+            var foreignKey: Any? = null
+            val pidFile = temp.resolve(if (update) "update-copy.pid" else "initial-copy.pid")
+            val realRunner = BoundedCommandRunner(5, 2_097_152)
+            val reader =
+                InstallerFileReader(
+                    CommandRunner { arguments, environment ->
+                        val from = Path.of(arguments[6])
+                        val publishing =
+                            from.parent.parent.fileName
+                                .toString()
+                                .startsWith(".fruit-and-faults-stage-")
+                        if (arguments[11] == "copy" && replaced == null && from.fileName.toString() != CliInstaller.MARKER &&
+                            publishing == update
+                        ) {
+                            val original = from.resolveSibling("retained-${from.fileName}")
+                            Files.move(from, original)
+                            val fifo = ProcessBuilder(listOf("mkfifo", from.toString())).start()
+                            try {
+                                check(fifo.waitFor(3, java.util.concurrent.TimeUnit.SECONDS) && fifo.exitValue() == 0)
+                            } finally {
+                                if (fifo.isAlive) fifo.destroyForcibly()
+                            }
+                            replaced = from
+                            retained = original
+                            foreignKey =
+                                Files
+                                    .readAttributes(
+                                        from,
+                                        java.nio.file.attribute.BasicFileAttributes::class.java,
+                                        java.nio.file.LinkOption.NOFOLLOW_LINKS,
+                                    ).fileKey()
+                            BoundedCommandRunner(2).run(
+                                probeArguments("blocked-copy", from.toString()) +
+                                    listOf(arguments[12], pidFile.toString()),
+                                emptyMap(),
+                            )
+                        } else {
+                            realRunner.run(arguments, environment)
+                        }
+                    },
+                )
+            assertThrows(IllegalStateException::class.java) { CliInstaller(reader).install(source, target, "0.2.0", update) }
+            val foreign = checkNotNull(replaced)
+            assertEquals(
+                foreignKey,
+                Files
+                    .readAttributes(
+                        foreign,
+                        java.nio.file.attribute.BasicFileAttributes::class.java,
+                        java.nio.file.LinkOption.NOFOLLOW_LINKS,
+                    ).fileKey(),
+            )
+            assertFalse(Files.isRegularFile(foreign, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+            assertTrue(Files.readString(checkNotNull(retained)).startsWith("launcher-"))
+            val pid = Files.readString(pidFile).toLong()
+            ProcessHandle.of(pid).ifPresent { it.onExit().get(3, java.util.concurrent.TimeUnit.SECONDS) }
+            assertFalse(ProcessHandle.of(pid).map { it.isAlive }.orElse(false))
+            if (oldMarker == null) {
+                assertFalse(Files.exists(target.root))
+            } else {
+                assertArrayEquals(oldMarker, Files.readAllBytes(target.root.resolve(CliInstaller.MARKER)))
+                assertEquals("jar-old-copy", Files.readString(target.root.resolve("lib/app.jar")))
+                CliInstaller().validate(target)
+            }
+        }
+    }
+
+    @Test fun `copy worker preserves a foreign destination appearing after preflight`() {
+        val source = temp.resolve("copy-input")
+        val destination = temp.resolve("copy-foreign")
+        Files.writeString(source, "approved source")
+        var key: Any? = null
+        val realRunner = BoundedCommandRunner(5, 2_097_152)
+        val reader =
+            InstallerFileReader(
+                CommandRunner { arguments, environment ->
+                    if (arguments[11] == "copy") {
+                        Files.writeString(destination, "foreign destination")
+                        key =
+                            Files
+                                .readAttributes(
+                                    destination,
+                                    java.nio.file.attribute.BasicFileAttributes::class.java,
+                                    java.nio.file.LinkOption.NOFOLLOW_LINKS,
+                                ).fileKey()
+                    }
+                    realRunner.run(arguments, environment)
+                },
+            )
+        assertThrows(IllegalStateException::class.java) { reader.copy(source, destination) }
+        assertEquals("foreign destination", Files.readString(destination))
+        assertEquals(
+            key,
+            Files
+                .readAttributes(
+                    destination,
+                    java.nio.file.attribute.BasicFileAttributes::class.java,
+                    java.nio.file.LinkOption.NOFOLLOW_LINKS,
+                ).fileKey(),
+        )
+    }
+
+    @Test fun `interrupted copy worker terminates and safely cleans an untouched claim`() {
+        org.junit.jupiter.api.Assumptions
+            .assumeFalse(System.getProperty("os.name").startsWith("Windows"))
+        val target = layout().copy(root = temp.resolve("interrupted-copy-install"))
+        val source = distribution("interrupted-copy")
+        val pidFile = temp.resolve("interrupted-copy.pid")
+        val replaced =
+            java.util.concurrent.atomic
+                .AtomicReference<Path>()
+        val failure =
+            java.util.concurrent.atomic
+                .AtomicReference<Throwable>()
+        val interrupted =
+            java.util.concurrent.atomic
+                .AtomicBoolean(false)
+        val realRunner = BoundedCommandRunner(5, 2_097_152)
+        val reader =
+            InstallerFileReader(
+                CommandRunner { arguments, environment ->
+                    if (arguments[11] != "copy") {
+                        realRunner.run(arguments, environment)
+                    } else {
+                        val from = Path.of(arguments[6])
+                        Files.move(from, from.resolveSibling("retained-${from.fileName}"))
+                        val fifo = ProcessBuilder(listOf("mkfifo", from.toString())).start()
+                        try {
+                            check(fifo.waitFor(3, java.util.concurrent.TimeUnit.SECONDS) && fifo.exitValue() == 0)
+                        } finally {
+                            if (fifo.isAlive) fifo.destroyForcibly()
+                        }
+                        replaced.set(from)
+                        BoundedCommandRunner(
+                            5,
+                        ).run(probeArguments("blocked-copy", from.toString()) + listOf(arguments[12], pidFile.toString()), emptyMap())
+                    }
+                },
+            )
+        val worker =
+            Thread {
+                try {
+                    CliInstaller(reader).install(source, target, "0.1.0")
+                } catch (problem: Throwable) {
+                    failure.set(problem)
+                } finally {
+                    interrupted.set(Thread.currentThread().isInterrupted)
+                }
+            }
+        worker.start()
+        try {
+            val deadline =
+                System.nanoTime() +
+                    java.util.concurrent.TimeUnit.SECONDS
+                        .toNanos(15)
+            while (!Files.exists(pidFile) && worker.isAlive && System.nanoTime() < deadline) Thread.yield()
+            assertTrue(Files.exists(pidFile))
+            worker.interrupt()
+            worker.join(5_000)
+            assertFalse(worker.isAlive)
+            assertTrue(failure.get() is IllegalStateException)
+            assertTrue(interrupted.get())
+            val pid = Files.readString(pidFile).toLong()
+            ProcessHandle.of(pid).ifPresent { it.onExit().get(3, java.util.concurrent.TimeUnit.SECONDS) }
+            assertFalse(ProcessHandle.of(pid).map { it.isAlive }.orElse(false))
+            assertFalse(Files.exists(target.root))
+            assertFalse(Files.isRegularFile(replaced.get(), java.nio.file.LinkOption.NOFOLLOW_LINKS))
+            Files.list(target.root.parent).use { entries ->
+                assertTrue(entries.noneMatch { it.fileName.toString().startsWith(".fruit-and-faults-stage-") })
+            }
+        } finally {
+            worker.interrupt()
+            worker.join(5_000)
+        }
+    }
+
     @Test fun `a blocked ownership worker cannot block its parent`() {
         org.junit.jupiter.api.Assumptions
             .assumeFalse(System.getProperty("os.name").startsWith("Windows"))
@@ -773,6 +976,15 @@ object InstallerProbeFixture {
                             java.nio.file.LinkOption.NOFOLLOW_LINKS,
                         ),
                     ).use { it.read(java.nio.ByteBuffer.allocate(1)) }
+            }
+
+            "blocked-copy" -> {
+                val ready = Path.of(arguments[3])
+                val pending = ready.resolveSibling("${ready.fileName}.tmp")
+                Files.writeString(pending, ProcessHandle.current().pid().toString())
+                Files.move(pending, ready, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+                // A FIFO has size zero, forcing the standard Unix buffered-copy fallback.
+                Files.copy(Path.of(arguments[1]), Path.of(arguments[2]), java.nio.file.StandardCopyOption.COPY_ATTRIBUTES)
             }
         }
     }

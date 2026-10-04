@@ -121,3 +121,32 @@ and inventory digest opens occur only in bounded workers; special files are reje
 before opening whenever observed. A race after inspection can block the child,
 not the Gradle parent. State is capped at 1 MiB and inventory files at 512 MiB;
 each worker has a five-second deadline and at most 2 MiB captured output.
+
+## Task 13 copy-worker review fix
+
+The next 2026-10-04 fix round used
+`/private/tmp/fruit-and-faults-task13-copy.L5SaCL` with all ten explicit overrides
+and the same named spaces/Cyrillic locations, zsh, and Temurin 26.0.1 inputs.
+Native macOS setup, sourced temporary-profile lookup/version, unchanged repeat
+setup, forced uninstall, and repeated uninstall passed. Native Windows/Linux
+remain UNVERIFIED; making tests portable is not native smoke evidence.
+
+Windows delimiter tests now separate representable semicolon paths from raw
+quote/control parsing inside expected-failure assertions. The raw policy is
+also tested without depending on the native path parser.
+
+Every production source byte open and copy is now inside an owned bounded
+worker. Copy uses no-follow source identity/size/digest binding, exclusive
+destination creation anchored by a secure directory stream where supported,
+checked directory/identity fallback otherwise, and parent digest/inventory
+verification. Executable permissions and timestamps are retained. Actual
+Unix FIFO fallback copy fixtures time out in the owned child, whose PID is
+verified dead; initial installation and forced-update publication preserve
+foreign source state and the previous installation. Staging cleanup uses
+recorded original keys/hashes, never newly observed ownership. Additional
+checks cover a foreign destination appearing after preflight and interruption
+with process termination, flag preservation, and safe untouched-stage cleanup.
+Uncertain partial files are retained, not broadly deleted. Worker limits remain
+five seconds, 512 MiB input, and 2 MiB captured output. Root installer-suite
+verification has a five-minute bound to allow slower native Windows process
+startup; it still runs only with the verification task.
