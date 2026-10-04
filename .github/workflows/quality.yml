@@ -18,8 +18,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
-    name: Gradle quality gate
+  application-tests:
+    name: Application tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -44,8 +44,8 @@ jobs:
           cache-read-only: ${{ github.event_name == 'pull_request' }}
           validate-wrappers: true
 
-      - name: Run quality gate
-        run: ./gradlew check --no-daemon --stacktrace
+      - name: Run application tests and coverage verification
+        run: ./gradlew :app:test :app:jacocoTestCoverageVerification --no-daemon --stacktrace
 
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() && hashFiles('app/build/reports/jacoco/test/jacocoTestReport.xml') != '' }}
@@ -58,13 +58,121 @@ jobs:
           name: jacoco
           use_oidc: true
 
-      - name: Upload quality reports
+      - name: Upload application test reports
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: quality-reports-${{ github.run_attempt }}
+          name: application-test-reports-${{ github.run_attempt }}
           path: |
-            **/build/reports/**
-            **/build/test-results/**
+            app/build/reports/**
+            app/build/test-results/**
           if-no-files-found: warn
           retention-days: 14
+
+  static-analysis:
+    name: Formatting and static analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 26
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "26"
+          java-package: jdk
+          verify-signature: true
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
+        with:
+          cache-provider: basic
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+          validate-wrappers: true
+
+      - name: Run formatting and static analysis
+        run: >-
+          ./gradlew
+          spotlessCheck
+          :app:spotlessCheck
+          :app:checkstyleMain
+          :app:checkstyleTest
+          :app:compileJava
+          :app:compileTestJava
+          --no-daemon
+          --stacktrace
+
+      - name: Upload static analysis reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: static-analysis-reports-${{ github.run_attempt }}
+          path: app/build/reports/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+  installer-tests:
+    name: Installer tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 26
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "26"
+          java-package: jdk
+          verify-signature: true
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
+        with:
+          cache-provider: basic
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+          validate-wrappers: true
+
+      - name: Run installer tests
+        run: ./gradlew -p buildSrc test --no-daemon --stacktrace
+
+      - name: Upload installer test reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: installer-test-reports-${{ github.run_attempt }}
+          path: |
+            buildSrc/build/reports/**
+            buildSrc/build/test-results/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  quality:
+    name: Gradle quality gate
+    if: ${{ always() }}
+    needs:
+      - application-tests
+      - static-analysis
+      - installer-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Verify all quality jobs passed
+        env:
+          APPLICATION_TESTS_RESULT: ${{ needs.application-tests.result }}
+          STATIC_ANALYSIS_RESULT: ${{ needs.static-analysis.result }}
+          INSTALLER_TESTS_RESULT: ${{ needs.installer-tests.result }}
+        run: |
+          test "$APPLICATION_TESTS_RESULT" = success
+          test "$STATIC_ANALYSIS_RESULT" = success
+          test "$INSTALLER_TESTS_RESULT" = success
