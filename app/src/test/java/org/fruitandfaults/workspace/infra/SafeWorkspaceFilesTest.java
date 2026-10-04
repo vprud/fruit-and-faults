@@ -2,6 +2,7 @@ package org.fruitandfaults.workspace.infra;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -37,6 +38,28 @@ class SafeWorkspaceFilesTest {
       "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
   @TempDir private Path root;
   private final SafeWorkspaceFiles files = new SafeWorkspaceFiles();
+
+  @Test
+  void providerWithoutSecureDirectoryHandlesFailsBeforePublishingLearnerContent()
+      throws IOException {
+    try (var provider =
+        java.nio.file.FileSystems.newFileSystem(
+            root.resolve("unsupported-provider.zip"), Map.of("create", "true"))) {
+      Path unsupported = provider.getPath("/");
+      try (var opened = Files.newDirectoryStream(unsupported)) {
+        assertFalse(opened instanceof java.nio.file.SecureDirectoryStream<?>);
+      }
+      WorkspaceWriteException failed =
+          assertThrows(
+              WorkspaceWriteException.class,
+              () -> files.writeNewSafely(unsupported, WorkspacePath.parse("Game.java"), BYTES));
+      assertEquals(WorkspaceWriteException.Reason.UNSUPPORTED_PUBLICATION, failed.reason());
+      assertTrue(Files.notExists(unsupported.resolve("Game.java")));
+      try (var entries = Files.list(unsupported)) {
+        assertEquals(0, entries.count());
+      }
+    }
+  }
 
   @Test
   void boundedReadsReturnOnlyRequestedRegularFilesAndRejectSymlinks() throws IOException {

@@ -12,6 +12,7 @@ import java.util.function.Supplier;
 
 import org.fruitandfaults.course.application.AdvanceRequest;
 import org.fruitandfaults.course.application.AdvanceResult;
+import org.fruitandfaults.course.application.CourseStatus;
 import org.fruitandfaults.lesson.ReflectionAnswer;
 import org.fruitandfaults.validation.domain.Diagnostic;
 import org.fruitandfaults.workspace.application.StartRequest;
@@ -43,7 +44,7 @@ public final class FruitAndFaults {
         --yes              Confirm changes for start or next
 
       Without an interactive terminal, start requires --yes;
-      next requires --answer <id> and --yes.
+      next requires --yes and, while a lesson is active, --answer <id>.
       """;
 
   private FruitAndFaults() {}
@@ -114,7 +115,7 @@ public final class FruitAndFaults {
     var renderer = new TextRenderer(terminal.interactive(), arguments.noColor());
     if (!terminal.interactive()
         && arguments.command() == Arguments.Command.NEXT
-        && (arguments.answer().isEmpty() || !arguments.yes())) {
+        && !arguments.yes()) {
       return renderer.diagnostic(
           ExitCode.INVALID_ARGUMENTS,
           new Diagnostic(
@@ -149,6 +150,25 @@ public final class FruitAndFaults {
             arguments.verbose());
       }
       Path root = application.locator().locate(current).path();
+      if (!terminal.interactive()
+          && arguments.command() == Arguments.Command.NEXT
+          && arguments.answer().isEmpty()) {
+        CourseStatus status = application.status().apply(root);
+        if (status instanceof CourseStatus.Unavailable) {
+          return completed(
+              renderer.status(status, arguments.verbose()), renderer, arguments.verbose());
+        }
+        if (((CourseStatus.Ready) status).activeLesson().isPresent()) {
+          return renderer.diagnostic(
+              ExitCode.INVALID_ARGUMENTS,
+              new Diagnostic(
+                  "Явный ответ на вопрос активного урока без интерактивного терминала.",
+                  "Для активного урока next требует --answer <option-id> и --yes.",
+                  "Выполните next --answer <option-id> --yes либо откройте интерактивный терминал."),
+              false,
+              null);
+        }
+      }
       CommandResult result =
           switch (arguments.command()) {
             case STATUS -> renderer.status(application.status().apply(root), arguments.verbose());

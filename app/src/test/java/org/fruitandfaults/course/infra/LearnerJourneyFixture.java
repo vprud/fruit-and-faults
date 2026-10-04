@@ -83,6 +83,17 @@ public final class LearnerJourneyFixture {
     return build(workspace, cachedGradleHome());
   }
 
+  /**
+   * Copies the exact cached wrapper and pinned dependencies into the temporary learner project.
+   *
+   * @param workspace isolated test directory with the disclosed wrapper
+   * @return private Gradle user home, without starting a wrapper or contacting the network
+   * @throws IOException if the exact offline prerequisites are unavailable
+   */
+  public static Path prepareOfflineGradleHome(Path workspace) throws IOException {
+    return prepareGradleHome(workspace, cachedGradleHome());
+  }
+
   static BuildResult build(Path workspace, Path cacheSource) throws Exception {
     Path gradleHome = prepareGradleHome(workspace, cacheSource);
     List<String> command = new ArrayList<>();
@@ -316,6 +327,15 @@ public final class LearnerJourneyFixture {
     ProcessBuilder builder =
         new ProcessBuilder(command).directory(workspace.toFile()).redirectErrorStream(true);
     builder.environment().put("JAVA_HOME", System.getProperty("java.home"));
+    if (command.getFirst().equals("git")) {
+      builder.environment().keySet().removeIf(name -> name.startsWith("GIT_"));
+      builder.environment().put("GIT_CONFIG_NOSYSTEM", "1");
+      builder
+          .environment()
+          .put(
+              "GIT_CONFIG_GLOBAL",
+              System.getProperty("os.name").startsWith("Windows") ? "NUL" : "/dev/null");
+    }
     builder.environment().putAll(environment);
     if (environment.containsKey("GRADLE_USER_HOME")) {
       for (String option :

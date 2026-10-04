@@ -229,16 +229,13 @@ class CommandJourneyTest {
   }
 
   @Test
-  void noninteractiveNextRejectsMissingFlagsBeforeCompositionOrValidation() {
+  void noninteractiveNextRejectsMissingConfirmationBeforeCompositionOrValidation() {
     Supplier<ApplicationFactory.Application> forbidden =
         () -> {
           throw new AssertionError("Missing flags must be rejected before validation");
         };
     for (String[] args :
-        List.of(
-            new String[] {"next"},
-            new String[] {"next", "--yes"},
-            new String[] {"next", "--answer", "compile-before-tests"})) {
+        List.of(new String[] {"next"}, new String[] {"next", "--answer", "compile-before-tests"})) {
       var result = run(forbidden, temporary, false, "", args);
       assertEquals(2, result.code());
       assertTrue(result.err().contains("--answer"));
