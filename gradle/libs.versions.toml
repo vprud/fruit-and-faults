@@ -10,6 +10,7 @@ jackson = "2.22.3"
 jacoco = "0.8.15"
 jspecify = "1.0.1"
 junit-jupiter = "6.0.1"
+kotlin-build = "2.3.21"
 nullaway = "0.13.8"
 spotless = "8.10.3"
 
@@ -24,3 +25,4 @@ nullaway = { module = "com.uber.nullaway:nullaway", version.ref = "nullaway" }
 [plugins]
 errorprone = { id = "net.ltgt.errorprone", version.ref = "errorprone-plugin" }
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin-build" }
