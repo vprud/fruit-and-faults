@@ -104,6 +104,9 @@ Ownership markers, profiles, and redirected PATH state must be regular files
 under 1 MiB; bounded read workers reject substituted or special files safely.
 Distribution copies also use bounded owned workers and exclusive destinations.
 Uncertain partial or substituted staging state is retained for inspection.
+Copied-file ownership uses the worker-created identity, not a later replacement.
+Interrupted updates preserve cancellation and restore the verified prior
+installation when the incomplete claim can be safely removed.
 
 Native platform evidence and the temporary-root smoke recipe are recorded in
 [the installation smoke matrix](docs/testing/phase-a-installation-smoke.md).

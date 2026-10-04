@@ -12,6 +12,13 @@ import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFileAttributeView
 import java.util.Base64
 
+/** Immutable ownership proof returned by the worker that exclusively created a copied file. */
+data class CopyProof(
+    val key: String,
+    val size: Long,
+    val digest: String,
+)
+
 /** Reads untrusted installer state only inside an owned, deadline-bound process. */
 class InstallerFileReader(
     private val runner: CommandRunner = BoundedCommandRunner(5, 2_097_152),
@@ -43,23 +50,29 @@ class InstallerFileReader(
         source: Path,
         destination: Path,
         expectedHash: String = hash(source),
-    ) {
+    ): CopyProof {
         require(expectedHash.matches(Regex("[a-f0-9]{64}")))
         val target = CliPlatform.absolute(destination)
         safePath(target)
         val parentKey = directoryKey(target.parent)
         check(!Files.exists(target, NOFOLLOW_LINKS)) { "Copy destination already exists; no files replaced." }
-        val result = probe(source, 512 * 1_048_576, "copy", listOf(target.toString(), parentKey, expectedHash)).second.split(' ')
-        check(result.size == 2 && result[1] == expectedHash) { "Invalid copy-worker content response." }
-        val key = Base64.getDecoder().decode(result[0]).toString(Charsets.UTF_8)
+        val (sourceStamp, output) = probe(source, 512 * 1_048_576, "copy", listOf(target.toString(), parentKey, expectedHash))
+        val result = output.split(' ')
+        check(result.size == 3 && result[1].toLongOrNull() == sourceStamp.size && result[2] == expectedHash) {
+            "Invalid copy-worker content response."
+        }
+        val proof = CopyProof(Base64.getDecoder().decode(result[0]).toString(Charsets.UTF_8), sourceStamp.size, expectedHash)
+        check(proof.key.isNotBlank()) { "Missing worker-created copy identity." }
         safePath(target)
-        check(directoryKey(target.parent) == parentKey && installerFileStamp(target, 512 * 1_048_576).key == key) {
+        val targetStamp = installerFileStamp(target, 512 * 1_048_576)
+        check(directoryKey(target.parent) == parentKey && targetStamp.key == proof.key && targetStamp.size == proof.size) {
             "Copy destination identity changed. Preserve it before retrying."
         }
         check(hash(target) == expectedHash) { "Copied bytes changed. Preserve them before retrying." }
-        check(installerFileStamp(target, 512 * 1_048_576).key == key && directoryKey(target.parent) == parentKey) {
+        check(installerFileStamp(target, 512 * 1_048_576) == targetStamp && directoryKey(target.parent) == parentKey) {
             "Copy destination changed after verification."
         }
+        return proof
     }
 
     private fun probe(
@@ -226,7 +239,7 @@ object InstallerReadWorker {
                     }
                     basic.setTimes(sourceAttrs.lastModifiedTime(), null, null)
                     check(basic.readAttributes().fileKey().toString() == key && directoryKey(target.parent) == parentKey)
-                    return Base64.getEncoder().encodeToString(key.toByteArray(Charsets.UTF_8)) + " " + hash
+                    return Base64.getEncoder().encodeToString(key.toByteArray(Charsets.UTF_8)) + " " + count + " " + hash
                 }
             }
         }

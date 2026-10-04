@@ -150,3 +150,31 @@ Uncertain partial files are retained, not broadly deleted. Worker limits remain
 five seconds, 512 MiB input, and 2 MiB captured output. Root installer-suite
 verification has a five-minute bound to allow slower native Windows process
 startup; it still runs only with the verification task.
+
+## Task 13 recovery and identity-proof review fix
+
+The next 2026-10-04 round used the fresh temporary root
+`/private/tmp/fruit-and-faults-task13-proof.BEl1NG`, all ten overrides, the same
+spaces/Cyrillic path shape, zsh, and read-only Temurin 26.0.1 input. Native macOS
+setup and installed version `0.1.0` passed; repeat setup retained identical
+marker/profile hashes. Forced uninstall and repeat uninstall passed, leaving
+the exact root and every command-bin entry absent and the temporary profile
+empty. Actual user home/PATH/profile/registry remained untouched. Native
+Windows/Linux smoke is still UNVERIFIED.
+
+Interrupted forced updates now run owned claim cleanup, staging cleanup, and
+verified backup restoration as independent recovery phases. Existing and new
+interruptions are remembered and restored after these bounded operations;
+cleanup errors do not skip restoration and are retained with the original
+failure. Regression coverage interrupts a real owned worker after a published
+file, checks exact old marker/app restoration, process/drain termination, and
+the interrupt flag. Another test fails staging cleanup with a new interruption
+and still restores the prior installation.
+
+The copy worker returns its created destination key, size, and digest as an
+immutable proof. Stage/publication records use that proof directly, including
+the published marker, instead of adopting a later observed identity. Same-byte
+foreign-inode replacements are detected and retained on both paths; source
+bytes remain unchanged and no incomplete installation validates successfully.
+Providers without stable file keys fail conservatively. The portable filesystem
+and retained-uncertain-state caveats above still apply.

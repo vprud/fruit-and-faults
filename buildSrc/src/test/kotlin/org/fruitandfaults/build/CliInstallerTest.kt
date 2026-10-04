@@ -433,6 +433,58 @@ class CliInstallerTest {
         assertFalse(Files.exists(target.root))
     }
 
+    @Test fun `same byte foreign replacement after completed copy is never adopted for cleanup`() {
+        for (publishing in listOf(false, true)) {
+            val target = layout().copy(root = temp.resolve(if (publishing) "published-replacement" else "staged-replacement"))
+            val source = distribution(if (publishing) "publish-replacement" else "stage-replacement")
+            val original = Files.readAllBytes(source.resolve("bin/fruit-and-faults"))
+            var replacement: Path? = null
+            var key: Any? = null
+            val installer =
+                CliInstaller { from, to ->
+                    val publication =
+                        from.parent.parent.fileName
+                            .toString()
+                            .startsWith(".fruit-and-faults-stage-")
+                    if (replacement != null) throw java.io.IOException("failure after completed copy")
+                    val proof = InstallerFileReader().copy(from, to)
+                    if (publication == publishing) {
+                        val bytes = Files.readAllBytes(to)
+                        Files.move(to, temp.resolve(if (publishing) "retained-published-copy" else "retained-staged-copy"))
+                        Files.write(to, bytes, java.nio.file.StandardOpenOption.CREATE_NEW)
+                        replacement = to
+                        key =
+                            Files
+                                .readAttributes(
+                                    to,
+                                    java.nio.file.attribute.BasicFileAttributes::class.java,
+                                    java.nio.file.LinkOption.NOFOLLOW_LINKS,
+                                ).fileKey()
+                    }
+                    proof
+                }
+            assertThrows(Exception::class.java) { installer.install(source, target, "0.1.0") }
+            val foreign = checkNotNull(replacement)
+            assertTrue(Files.exists(foreign), "A same-byte foreign inode must not become cleanup-owned")
+            assertEquals(
+                key,
+                Files
+                    .readAttributes(
+                        foreign,
+                        java.nio.file.attribute.BasicFileAttributes::class.java,
+                        java.nio.file.LinkOption.NOFOLLOW_LINKS,
+                    ).fileKey(),
+            )
+            assertArrayEquals(original, Files.readAllBytes(foreign))
+            assertArrayEquals(original, Files.readAllBytes(source.resolve("bin/fruit-and-faults")))
+            if (!publishing) {
+                assertFalse(Files.exists(target.root))
+            } else {
+                assertThrows(IllegalStateException::class.java) { CliInstaller().validate(target) }
+            }
+        }
+    }
+
     @Test fun `initial publication preserves foreign targets created while staging`() {
         for (kind in listOf("empty", "file", "symlink")) {
             val target = layout().copy(root = temp.resolve("install-$kind"))
@@ -455,8 +507,7 @@ class CliInstallerTest {
                                 ).fileKey()
                         appeared = true
                     }
-                    Files.copy(source, destination)
-                    Unit
+                    InstallerFileReader().copy(source, destination)
                 }
             assertThrows(java.nio.file.FileAlreadyExistsException::class.java) {
                 installer.install(distribution(kind), target, "0.1.0", false)
@@ -490,8 +541,7 @@ class CliInstallerTest {
                 ) {
                     throw java.io.IOException("injected publication copy failure")
                 }
-                Files.copy(source, destination)
-                Unit
+                InstallerFileReader().copy(source, destination)
             }
         assertThrows(java.io.IOException::class.java) { failing.install(distribution("update"), target, "0.2.0") }
         assertArrayEquals(marker, Files.readAllBytes(target.root.resolve(CliInstaller.MARKER)))
@@ -510,12 +560,161 @@ class CliInstallerTest {
                     Files.writeString(target.root.resolve("foreign.txt"), "preserve")
                     throw java.io.IOException("injected foreign publication state")
                 }
-                Files.copy(source, destination)
-                Unit
+                InstallerFileReader().copy(source, destination)
             }
         assertThrows(java.io.IOException::class.java) { failing.install(distribution(), target, "0.1.0") }
         assertEquals("preserve", Files.readString(target.root.resolve("foreign.txt")))
         assertTrue(Files.exists(target.root.resolve(CliInstaller.MARKER)))
+    }
+
+    @Test fun `interrupted partial update restores exact old installation and terminates its worker`() {
+        val target = layout()
+        CliInstaller().install(distribution("before-interrupt"), target, "0.1.0")
+        val marker = Files.readAllBytes(target.root.resolve(CliInstaller.MARKER))
+        val source = distribution("interrupted-update")
+        val pidFile = temp.resolve("update-interrupt.pid")
+        val drains =
+            Thread
+                .getAllStackTraces()
+                .keys
+                .filter { it.name == "cli-install-probe" }
+                .map { it.threadId() }
+                .toSet()
+        val failure =
+            java.util.concurrent.atomic
+                .AtomicReference<Throwable>()
+        val interrupted =
+            java.util.concurrent.atomic
+                .AtomicBoolean(false)
+        var published = 0
+        val runner = BoundedCommandRunner(5, 2_097_152)
+        val reader =
+            InstallerFileReader(
+                CommandRunner { arguments, environment ->
+                    val from = Path.of(arguments[6])
+                    val publishing =
+                        from.parent.parent.fileName
+                            .toString()
+                            .startsWith(".fruit-and-faults-stage-")
+                    if (arguments[11] == "copy" && publishing && from.fileName.toString() != CliInstaller.MARKER && ++published == 2) {
+                        BoundedCommandRunner(5).run(probeArguments("busy", pidFile.toString()), emptyMap())
+                    } else {
+                        runner.run(arguments, environment)
+                    }
+                },
+            )
+        val worker =
+            Thread {
+                try {
+                    CliInstaller(reader).install(source, target, "0.2.0", true)
+                } catch (problem: Throwable) {
+                    failure.set(problem)
+                } finally {
+                    interrupted.set(Thread.currentThread().isInterrupted)
+                }
+            }
+        worker.start()
+        try {
+            val deadline =
+                System.nanoTime() +
+                    java.util.concurrent.TimeUnit.SECONDS
+                        .toNanos(15)
+            while (!Files.exists(pidFile) && worker.isAlive && System.nanoTime() < deadline) Thread.yield()
+            assertTrue(Files.exists(pidFile), "Publication must copy a file before interruption")
+            worker.interrupt()
+            worker.join(15_000)
+            assertFalse(worker.isAlive)
+            assertTrue(failure.get() is IllegalStateException)
+            assertTrue(interrupted.get())
+            val pid = Files.readString(pidFile).toLong()
+            ProcessHandle.of(pid).ifPresent { it.onExit().get(3, java.util.concurrent.TimeUnit.SECONDS) }
+            assertFalse(ProcessHandle.of(pid).map { it.isAlive }.orElse(false))
+            assertArrayEquals(marker, Files.readAllBytes(target.root.resolve(CliInstaller.MARKER)))
+            assertEquals("jar-before-interrupt", Files.readString(target.root.resolve("lib/app.jar")))
+            assertEquals("launcher-interrupted-update", Files.readString(source.resolve("bin/fruit-and-faults")))
+            CliInstaller().validate(target)
+            Files.list(target.root.parent).use { entries ->
+                assertTrue(entries.noneMatch { it.fileName.toString().startsWith(".fruit-and-faults-") })
+            }
+            val drained =
+                System.nanoTime() +
+                    java.util.concurrent.TimeUnit.SECONDS
+                        .toNanos(3)
+            while (Thread.getAllStackTraces().keys.any { it.isAlive && it.name == "cli-install-probe" && it.threadId() !in drains } &&
+                System.nanoTime() < drained
+            ) {
+                Thread.yield()
+            }
+            assertFalse(Thread.getAllStackTraces().keys.any { it.isAlive && it.name == "cli-install-probe" && it.threadId() !in drains })
+        } finally {
+            worker.interrupt()
+            worker.join(15_000)
+        }
+    }
+
+    @Test fun `staging cleanup failure still restores backup and preserves a new interruption`() {
+        val target = layout()
+        CliInstaller().install(distribution("cleanup-old"), target, "0.1.0")
+        val marker = Files.readAllBytes(target.root.resolve(CliInstaller.MARKER))
+        val source = distribution("cleanup-update")
+        val failure =
+            java.util.concurrent.atomic
+                .AtomicReference<Throwable>()
+        val interrupted =
+            java.util.concurrent.atomic
+                .AtomicBoolean(false)
+        var published = 0
+        var publicationFailed = false
+        var cleanupFailed = false
+        val runner = BoundedCommandRunner(5, 2_097_152)
+        val reader =
+            InstallerFileReader(
+                CommandRunner { arguments, environment ->
+                    val path = Path.of(arguments[6])
+                    val inStage =
+                        path.parent.parent.fileName
+                            .toString()
+                            .startsWith(".fruit-and-faults-stage-")
+                    if (arguments[11] == "copy" && inStage && path.fileName.toString() != CliInstaller.MARKER && ++published == 2) {
+                        publicationFailed = true
+                        ProbeResult(7, "injected publication failure")
+                    } else if (publicationFailed && !cleanupFailed && arguments[11] == "hash" && inStage) {
+                        cleanupFailed = true
+                        Thread.currentThread().interrupt()
+                        throw IllegalStateException("injected staging cleanup interruption")
+                    } else {
+                        runner.run(arguments, environment)
+                    }
+                },
+            )
+        val worker =
+            Thread {
+                try {
+                    CliInstaller(reader).install(source, target, "0.2.0", true)
+                } catch (problem: Throwable) {
+                    failure.set(problem)
+                } finally {
+                    interrupted.set(Thread.currentThread().isInterrupted)
+                }
+            }
+        worker.start()
+        try {
+            worker.join(15_000)
+            assertFalse(worker.isAlive)
+            assertTrue(cleanupFailed)
+            assertTrue(failure.get() is IllegalStateException)
+            assertTrue(failure.get().suppressed.any { it.message == "injected staging cleanup interruption" })
+            assertTrue(interrupted.get())
+            assertArrayEquals(marker, Files.readAllBytes(target.root.resolve(CliInstaller.MARKER)))
+            assertEquals("jar-cleanup-old", Files.readString(target.root.resolve("lib/app.jar")))
+            CliInstaller().validate(target)
+            Files.list(target.root.parent).use { entries ->
+                assertFalse(entries.anyMatch { it.fileName.toString().startsWith(".fruit-and-faults-backup-") })
+            }
+        } finally {
+            worker.interrupt()
+            worker.join(15_000)
+        }
     }
 
     @Test fun `real owned process bounds output and reports nonzero exit`() {
