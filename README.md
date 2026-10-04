@@ -1,142 +1,178 @@
-# fruit-and-faults
+# Fruit & Faults
 
-A local Java course CLI. Install the CLI from this source repository, then keep
-your learner game in a separate directory. JDK **26** (both `java` and `javac`)
-and Git are prerequisites. The installer verifies your selected JDK; it does
-not download or install Java. The first source build may download Gradle and
-build dependencies. Installed CLI commands do not contact a service.
+[![Code quality](https://github.com/vprud/fruit-and-faults/actions/workflows/quality.yml/badge.svg)](https://github.com/vprud/fruit-and-faults/actions/workflows/quality.yml)
+[![Codecov](https://codecov.io/gh/vprud/fruit-and-faults/branch/main/graph/badge.svg)](https://codecov.io/gh/vprud/fruit-and-faults)
+[![Java 26](https://img.shields.io/badge/Java-26-ED8B00?logo=openjdk&logoColor=white)](https://openjdk.org/projects/jdk/26/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Phase A implements four lessons: diagnostics, coordinates/directions, field
-boundaries, and immutable game state. It has no browser renderer yet. Installer
-tasks support Windows, macOS, and Linux, but course operations require a Java
-filesystem provider with `SecureDirectoryStream` and stable file identities.
-The native macOS learner journey is verified. Native Windows commonly lacks
-that capability; Windows learner-workspace support is an acceptance blocker,
-even if installation succeeds. Native Windows/Linux installation smoke is
-still unverified. See [platform evidence](docs/testing/phase-a-installation-smoke.md).
+Fruit & Faults is a local, interactive Java course that teaches through a small
+game project. The CLI gives you one lesson at a time, prepares a separate Git
+workspace, checks your work, offers progressive hints, and remembers your
+progress. You write every solution yourself; the course never silently rewrites
+your code.
 
-## Windows (PowerShell or cmd)
+Phase A currently contains four lessons covering diagnostics, coordinates and
+directions, field boundaries, and immutable game state. A browser-based game
+renderer is planned but is not included yet.
 
-Open a terminal in the source repository. Check `java -version` and
-`javac -version`: both must report 26. Set `JAVA_HOME` to the JDK directory if
-needed, then run:
+## What you need
 
-```powershell
-.\gradlew.bat setupCli
-```
+- JDK 26: both `java -version` and `javac -version` must report version 26
+- Git
+- macOS, Linux, or Windows
 
-The distribution is installed under
-`%LOCALAPPDATA%\Programs\FruitAndFaults`. Only your **user** PATH is updated;
-administrator access is unnecessary. Open a new terminal and verify:
+The first build may download Gradle and project dependencies. Once installed
+and prepared, the course itself does not require a network service.
 
-```powershell
-fruit-and-faults --version
-fruit-and-faults start "C:\Projects\Моя игра" --yes
-```
+> [!IMPORTANT]
+> The native macOS learner journey is verified. Native Windows commonly lacks
+> the secure filesystem capability required by workspace operations, so a
+> successful installation or `--version` check does not yet guarantee that the
+> course can run there. Native Windows and Linux installation smoke tests are
+> still pending. See the [platform evidence](docs/testing/phase-a-installation-smoke.md).
 
-The start command requires the filesystem capability described above; do not
-interpret a successful `--version` as proof that the Windows course can run.
+## Quick start
 
-Remove the CLI from the source repository with:
+### macOS and Linux
 
-```powershell
-.\gradlew.bat uninstallCli -PcliForce=true
-```
-
-## macOS
-
-With JDK 26 and Git installed, run these commands in the source repository:
+From the cloned source repository:
 
 ```sh
 java -version
 javac -version
+./gradlew check
 ./gradlew setupCli
 ```
 
-The distribution goes to `~/Library/Application Support/FruitAndFaults`, and
-the command is linked from `~/.local/bin/fruit-and-faults`. If that directory
-is missing from PATH, the installer previews the affected profile and appends
-an owned block to `~/.zprofile` for zsh or `~/.bash_profile` for Bash. Open a new
-terminal, then run:
+Open a new terminal, verify the installation, and create a learner workspace
+outside this repository:
 
 ```sh
 fruit-and-faults --version
-fruit-and-faults start "$HOME/Projects/Моя игра" --yes
+fruit-and-faults start "$HOME/Projects/my-fruit-game" --yes
+cd "$HOME/Projects/my-fruit-game"
+fruit-and-faults status
 ```
 
-Uninstall from the source repository with `./gradlew uninstallCli -PcliForce=true`.
+On macOS, the CLI is installed under
+`~/Library/Application Support/FruitAndFaults`. On Linux, it is installed under
+`$XDG_DATA_HOME/fruit-and-faults` when that variable contains an absolute path,
+or under `~/.local/share/fruit-and-faults` otherwise. The command is exposed as
+`~/.local/bin/fruit-and-faults`; the installer explains any required PATH
+change.
 
-## Linux
+### Windows
 
-Check that `java -version` and `javac -version` report 26, then run
-`./gradlew setupCli` in the source repository. The distribution goes to
-`$XDG_DATA_HOME/fruit-and-faults` when XDG_DATA_HOME is set to an absolute path,
-otherwise `~/.local/share/fruit-and-faults` (blank/relative values are ignored).
-The command is linked from
-`~/.local/bin/fruit-and-faults`. Bash uses `~/.bashrc`; zsh uses `~/.zshrc`.
-Open a new terminal and run `fruit-and-faults --version`.
+From PowerShell or Command Prompt in the cloned source repository:
 
-For another Unix shell, the installer prints a manual PATH instruction and
-does not choose or edit a profile. Add `~/.local/bin` using that shell's own
-syntax. Uninstall with `./gradlew uninstallCli -PcliForce=true`.
+```powershell
+java -version
+javac -version
+.\gradlew.bat check
+.\gradlew.bat setupCli
+```
 
-## Complete the four lessons
+Open a new terminal, then run:
 
-Create the learner workspace outside this CLI source repository, then change
-into it. The commands also work from its nested directories.
+```powershell
+fruit-and-faults --version
+fruit-and-faults start "C:\Projects\my-fruit-game" --yes
+```
 
-| Command | Purpose |
+The CLI is installed under `%LOCALAPPDATA%\Programs\FruitAndFaults`, and only
+your user PATH is updated. Administrator access is not required. The learner
+workspace still depends on the Windows filesystem limitation described above.
+
+## The learning loop
+
+Start with `check`. The first lesson intentionally contains a compilation
+error, so a failing check is part of the course—not a broken installation.
+
+```text
+status → edit the game → check → commit → next
+                         ↑                 │
+                         └──── new lesson ─┘
+```
+
+1. Run `fruit-and-faults status` to see the current goal and next action.
+2. Edit the game in your learner workspace.
+3. Run `fruit-and-faults check` and use `fruit-and-faults hint` when needed.
+4. When the check passes, review and commit your changes with Git.
+5. Run `fruit-and-faults next`, answer the reflection question, and confirm the
+   next lesson.
+
+You can stop at any point. Run `status` from the workspace—or `start` with the
+same workspace path—to continue later. Commands also work from nested workspace
+directories.
+
+## Commands
+
+| Command | What it does |
 | --- | --- |
-| `fruit-and-faults start <directory> [--yes]` | Preview/create a Git-backed workspace or safely resume it. |
-| `fruit-and-faults status` | Show the current goal, files, hints, local Git facts, and one next action. |
-| `fruit-and-faults check` | Run cumulative visible tests and independent public-behavior checks. |
-| `fruit-and-faults hint` | Reveal one of three persisted hint levels. |
-| `fruit-and-faults next [--answer <option-id>] [--yes]` | Check, reflect, require a new clean local commit, and preview the next disclosure. |
-| `fruit-and-faults list` | Show lesson titles and states without future exercise details. |
+| `fruit-and-faults start <directory> [--yes]` | Preview, create, or resume a Git-backed learner workspace. |
+| `fruit-and-faults status` | Show the current lesson, relevant files, hints, Git state, and next action. |
+| `fruit-and-faults check` | Run the visible tests and independent behavior checks. |
+| `fruit-and-faults hint` | Reveal the next of three persisted hint levels. |
+| `fruit-and-faults next [--answer <id>] [--yes]` | Validate, reflect, and open the next lesson after a clean commit. |
+| `fruit-and-faults list` | Show lesson titles and progress without revealing future exercises. |
 
-`--help`, `--version`, `--no-color`, and `--verbose` are supported. Human views
-go to stdout; failures go to stderr. Exit codes distinguish incomplete work
-(1), usage (2), unsafe/conflicting state (3), compilation/tests (4), timeout or
-interruption (5), and internal errors (10); success is 0.
+Global options include `--help`, `--version`, `--no-color`, and `--verbose`.
+Human-readable output goes to stdout and failures go to stderr. For scripts,
+the CLI uses these exit codes:
 
-Start with `check`: lesson 1 intentionally contains a compilation error in
-learner source. Read the reported source location and the lesson goal, make
-your own edit, and rerun `check`. Later tests accumulate. The CLI supplies
-scaffolds and hints, and never applies a solution or rewrites your edits.
+| Code | Meaning |
+| ---: | --- |
+| 0 | Success |
+| 1 | Lesson is incomplete |
+| 2 | Invalid command or option |
+| 3 | Unsafe or conflicting workspace state |
+| 4 | Compilation or test failure |
+| 5 | Timeout or interruption |
+| 10 | Internal error |
 
-After a passing check, inspect `git status`, `git diff`, and `git diff --cached`,
-stage the intended files, and make your own local commit. Then use interactive
-`next` to select a numbered reflection answer and confirm the disclosure.
-Without a terminal, use `next --answer <option-id> --yes`; the displayed choices
-include stable IDs. A wrong answer or dirty/missing commit preserves progress.
-After lesson 4, follow the final metadata-commit advice so a clone also records
-completion. A completed course needs no new answer: `next --yes` is idempotent
-and opens a compatible later continuation when one is installed.
+In a non-interactive terminal, `start` requires `--yes`. While a lesson is
+active, `next` requires both `--answer <id>` and `--yes`; the displayed choices
+include stable answer IDs.
 
-The workspace tracks `.fruit-and-faults/progress.json`, `managed-files.json`,
-and `workspace.properties`. Commit them with your work. Gradle output, caches,
-and temporary transition journals are ignored. Stop at any time; `status` or
-`start <same-directory>` resumes the current lesson. Keep backups or local Git
-history when intentionally experimenting with state or immutable checks.
+## Installing JDK 26 with SDKMAN
 
-## Offline preparation and public GitHub publishing
+[SDKMAN](https://sdkman.io/) can install and select JDK 26 on macOS and Linux.
+It does not support native Windows terminals; use a native Windows JDK installer
+there.
 
-An installed course runs offline once JDK 26, Git, the exact bundled wrapper
-distribution, and pinned JUnit dependencies are cached. `setupCli` installs
-runtime dependencies but does not prepare the learner test dependencies. During
-initial source setup, while network access is deliberately available, run
-`./gradlew check` (`.\gradlew.bat check` on Windows) before `setupCli`. This
-resolves the matching test dependencies and verifies the course. Use the same
-Gradle user home for later checks; a custom home needs its own prepared cache.
-The wrapper URL must match the installed cache exactly, including its `.ok`
-completion marker. Cold/unsafe wrapper caches fail before wrapper launch;
-the CLI never downloads or repairs them. Dependency cache failures are toolchain
-diagnostics, not exercise failures. See [the check contract](docs/lesson-check-contract.md).
+Install SDKMAN, start a new shell or load it in the current one, and select a
+Java 26 distribution:
 
-Publishing is optional. The disclosed `docs/publishing-to-github.md` teaches
-creating an empty **public** GitHub repository through the website, with no
-generated README/license/gitignore. Review and commit selected files locally,
-then run these commands with your own repository URL:
+```sh
+curl -s "https://get.sdkman.io" | bash
+source "$HOME/.sdkman/bin/sdkman-init.sh"
+sdk list java
+sdk install java 26.0.1-tem
+sdk default java 26.0.1-tem
+java -version
+javac -version
+```
+
+The project is currently verified with Temurin 26.0.1. If that exact identifier
+is no longer available, choose a current Java 26 identifier from
+`sdk list java`.
+
+## Progress, Git, and safety
+
+The learner workspace stores progress in `.fruit-and-faults/progress.json` and
+tracks course-owned files in `managed-files.json` and `workspace.properties`.
+Commit these files with your work so a clone retains its progress. Build output,
+caches, and temporary transition journals are ignored.
+
+Before `next`, inspect `git status`, `git diff`, and `git diff --cached`, stage
+the intended files, and create your own local commit. A wrong reflection answer,
+dirty workspace, or missing commit does not discard valid progress. After the
+fourth lesson, follow the CLI's metadata-commit advice so completion is also
+recorded in a clone.
+
+Publishing to GitHub is optional. The CLI never requests a token, creates a
+remote, stages, commits, pushes, or contacts GitHub. If you want to publish,
+create an empty public repository and use Git normally:
 
 ```sh
 git remote add origin https://github.com/YOUR-ACCOUNT/YOUR-REPOSITORY.git
@@ -144,63 +180,77 @@ git branch -M main
 git push -u origin main
 ```
 
-Use GitHub's normal credential flow; account passwords do not authenticate Git
-over HTTPS. The CLI never asks for a token, creates a remote, stages, commits,
-pushes, or contacts GitHub. Missing origin/upstream/network does not block a
-lesson. A local clone carries committed progress; prepare its new machine's
-JDK/cache separately and run `status` in that clone.
+## Offline use
 
-## Update and remove the installed course
+An installed course can run offline when JDK 26, Git, the bundled Gradle wrapper
+distribution, and pinned JUnit dependencies are already cached. Run
+`./gradlew check` (`.\gradlew.bat check` on Windows) before `setupCli` while a
+network connection is available. This prepares both project and learner-test
+dependencies in the same Gradle user home.
 
-Inside your separate learner workspace, use `status`, `check`, `hint`, `next`,
-and `list`. `start <directory>` creates the workspace with a preview; `--yes`
-accepts it for noninteractive use. `--help` describes flags. GitHub publishing
-is optional. Offline lesson checks require the learner wrapper distribution,
-JDK, and dependencies to be present in the local Gradle cache.
+The CLI deliberately does not download or repair an incomplete wrapper cache.
+See the [lesson check contract](docs/lesson-check-contract.md) for the detailed
+offline and validation behavior.
 
-To update, return to the **CLI source repository**, inspect your source changes,
-run `git pull`, and rerun `setupCli -PcliForce=true` (with `gradlew.bat` on
-Windows). There is no online CLI update command. Your learner workspace and
-its progress are separate from the CLI installation. A compatible appended
-course continues through `status` and `next --yes` in the same learner workspace.
-The current release contains only four lessons; the automated continuation
-fixture is not released Phase B content. Compatible future releases must ship
-trusted historical contracts; incompatible/future formats stop before mutation.
+## Update or uninstall
 
-Installation and removal are repeatable. An unchanged setup needs no force
-flag. Replacing an existing owned distribution and uninstalling require
-`-PcliForce=true`; paths are printed before mutation. An unmarked directory,
-foreign command, symlinked path, changed installed file, or edited owned
-profile block stops the corresponding operation with preservation guidance.
-Uninstall removes only matching owned files/command/PATH/profile content,
-leaves unrelated profile bytes and PATH entries intact, and never removes a
-learner workspace. A newly created profile can remain as an empty file.
+To update the CLI, return to this source repository, review and pull the source
+changes, then reinstall:
 
-For isolated testing or custom locations, tasks accept absolute-path overrides:
-`-PcliUserHome=...`, `-PcliLocalAppData=...`, `-PcliXdgDataHome=...`,
-`-PcliInstallRoot=...`, `-PcliProfile=...`, and `-PcliJavaHome=...`.
-`-PcliShell=/bin/zsh` selects a known shell. `-PcliCurrentPath=...` supplies the
-PATH observation; `-PcliUserPathFile=...` redirects Windows user PATH to a
-regular test file instead of the registry. Use the same overrides on setup and
-uninstall. Profiles and all existing installer path components must be regular
-paths, not symlinks. Custom install roots must be dedicated directories.
-Windows install roots cannot contain semicolons, quotes, or control characters.
-Ownership markers, profiles, and redirected PATH state must be regular files
-under 1 MiB; bounded read workers reject substituted or special files safely.
-Distribution copies also use bounded owned workers and exclusive destinations.
-Uncertain partial or substituted staging state is retained for inspection.
-Copied-file ownership uses the worker-created identity, not a later replacement.
-Interrupted updates preserve cancellation and restore the verified prior
-installation when the incomplete claim can be safely removed.
+```sh
+git pull
+./gradlew setupCli -PcliForce=true
+```
 
-Native platform evidence and the temporary-root smoke recipe are recorded in
-[the installation smoke matrix](docs/testing/phase-a-installation-smoke.md).
+On Windows, use `gradlew.bat`. There is no online update command, and updating
+the CLI does not alter the separate learner workspace.
 
-For development, use the repository wrapper and Java 26 toolchain. After Java
-or build edits, run focused tests, `./gradlew spotlessApply`, inspect the diff,
-and run `./gradlew check`. The complete gate includes installer tests,
-Checkstyle, Error Prone/NullAway, Spotless, and at least 80% JaCoCo line coverage.
-Build distributions with `./gradlew :app:installDist :app:distZip`; they contain
-both Unix and Windows launchers. [Pilot observation](docs/pilot/phase-a-observer-guide.md)
-and [intentional-error drills](docs/pilot/phase-a-intentional-errors.md) keep
-human assessment separate from automated completion.
+To uninstall:
+
+```sh
+./gradlew uninstallCli -PcliForce=true
+```
+
+```powershell
+.\gradlew.bat uninstallCli -PcliForce=true
+```
+
+Installation and removal are ownership-aware: they stop rather than overwrite
+an unmarked directory, foreign command, symlinked path, changed installed file,
+or edited installer-owned profile block. Uninstalling never removes a learner
+workspace.
+
+Advanced installation overrides and the temporary-root smoke-test recipe are
+documented in the
+[installation smoke matrix](docs/testing/phase-a-installation-smoke.md).
+
+## Development
+
+Use the repository Gradle wrapper and its Java 26 toolchain. The complete
+quality gate runs tests, Spotless, Checkstyle, Error Prone with NullAway, and
+JaCoCo coverage verification with a minimum of 80% line coverage:
+
+```sh
+./gradlew check
+```
+
+After changing Java or Gradle files, format them before running the gate:
+
+```sh
+./gradlew spotlessApply
+./gradlew check
+```
+
+Build installable distributions with:
+
+```sh
+./gradlew :app:installDist :app:distZip
+```
+
+For guided testing, see the
+[pilot observer guide](docs/pilot/phase-a-observer-guide.md) and
+[intentional-error drills](docs/pilot/phase-a-intentional-errors.md).
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
