@@ -15,7 +15,7 @@ import java.util.UUID
 /** Installs only a validated distribution and removes exact, manifest-owned regular entries. */
 class CliInstaller(
     private val fileReader: InstallerFileReader = InstallerFileReader(),
-    private val copyFile: (Path, Path) -> Unit = { from, to ->
+    private val copyFile: (Path, Path) -> CopyProof = { from, to ->
         fileReader.copy(from, to)
     },
 ) {
@@ -41,29 +41,31 @@ class CliInstaller(
             "Distribution needs both Unix and Windows launchers."
         }
         val old = if (Files.exists(target.root, NOFOLLOW_LINKS)) owned(target.root) else null
+        val oldRootKey =
+            old?.let {
+                checkNotNull(Files.readAttributes(target.root, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
+            }
         if (old != null && old.version == version && old.tree.hashes() == source.hashes()) return
         check(old == null || force) { "Replacing ${target.root} requires -PcliForce=true. The marked CLI distribution will be replaced." }
         Files.createDirectories(target.root.parent)
         safePath(target.root.parent)
         val stage = Files.createTempDirectory(target.root.parent, ".fruit-and-faults-stage-")
-        val stageIdentity = Files.readAttributes(stage, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()
-        check(stageIdentity != null) { "Provider cannot identify staging. Preserve it and choose another location." }
-        val stageKeys = linkedMapOf<Path, Any>(stage to stageIdentity)
+        val stageKeys = linkedMapOf(stage to entryKey(stage))
         val stageHashes = linkedMapOf<Path, String>()
         var backup: Path? = null
+        var failure: Exception? = null
         try {
             for (directory in source.directories.sortedBy { it.length }) {
                 val path = Files.createDirectory(stage.resolve(directory))
-                stageKeys[path] = checkNotNull(Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
+                stageKeys[path] = entryKey(path)
             }
             for (name in source.files.keys) {
                 safePath(distribution.resolve(name))
                 check(hash(distribution.resolve(name)) == source.files.getValue(name).hash) { "Distribution changed during staging." }
-                copyFile(distribution.resolve(name), stage.resolve(name))
-                check(hash(stage.resolve(name)) == source.files.getValue(name).hash) { "Copied distribution bytes changed." }
-                stageKeys[stage.resolve(name)] =
-                    checkNotNull(Files.readAttributes(stage.resolve(name), BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
-                stageHashes[stage.resolve(name)] = source.files.getValue(name).hash
+                val copied = copyFile(distribution.resolve(name), stage.resolve(name))
+                stageKeys[stage.resolve(name)] = copied.key
+                stageHashes[stage.resolve(name)] = copied.digest
+                verifyCopy(stage.resolve(name), copied, source.files.getValue(name).hash)
             }
             val staged = snapshot(stage, false)
             check(staged.hashes() == source.hashes()) { "Distribution changed during staging." }
@@ -74,25 +76,31 @@ class CliInstaller(
                 java.nio.file.StandardOpenOption.WRITE,
                 NOFOLLOW_LINKS,
             )
-            stageKeys[stage.resolve(MARKER)] =
-                checkNotNull(Files.readAttributes(stage.resolve(MARKER), BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
+            stageKeys[stage.resolve(MARKER)] = entryKey(stage.resolve(MARKER))
             stageHashes[stage.resolve(MARKER)] = hash(stage.resolve(MARKER))
             if (old != null) {
                 check(owned(target.root).bytes.contentEquals(old.bytes)) { "Installation changed before replacement." }
                 backup = target.root.resolveSibling(".fruit-and-faults-backup-${UUID.randomUUID()}")
                 move(target.root, backup)
             }
-            try {
-                publishClaimed(stage, target.root)
-            } catch (failure: Exception) {
-                if (backup != null && !Files.exists(target.root, NOFOLLOW_LINKS)) move(backup, target.root)
-                throw failure
-            }
+            publishClaimed(stage, target.root)
             if (backup != null) deleteOwned(backup, old!!, target.root)
+        } catch (problem: Exception) {
+            failure = problem
+            throw problem
         } finally {
-            if (Files.exists(stage, NOFOLLOW_LINKS)) {
-                cleanupClaim(stageKeys, stageHashes)
-            }
+            recoverOwned(failure, {
+                if (Files.exists(stage, NOFOLLOW_LINKS)) cleanupClaim(stageKeys, stageHashes)
+            }, {
+                val retained = backup
+                if (failure != null && retained != null && !Files.exists(target.root, NOFOLLOW_LINKS)) {
+                    check(Files.readAttributes(retained, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey() == oldRootKey)
+                    val checked = owned(retained, target.root)
+                    check(checked.bytes.contentEquals(old.bytes) && checked.tree == old.tree) { "Backup identity changed; preserve it." }
+                    safePath(target.root)
+                    Files.move(retained, target.root)
+                }
+            })
         }
     }
 
@@ -102,57 +110,112 @@ class CliInstaller(
         root: Path,
     ) {
         Files.createDirectory(root)
-        val rootKey = Files.readAttributes(root, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()
-        check(rootKey != null) { "Provider cannot identify the claimed directory. Preserve it and choose another location." }
-        val keys = linkedMapOf<Path, Any>(root to rootKey)
+        val keys = linkedMapOf(root to entryKey(root))
         val hashes = linkedMapOf<Path, String>()
         var complete = false
+        var failure: Exception? = null
         try {
             val markerFile = root.resolve(MARKER)
-            fileReader.copy(stage.resolve(MARKER), markerFile)
-            keys[markerFile] = checkNotNull(Files.readAttributes(markerFile, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
-            hashes[markerFile] = hash(stage.resolve(MARKER))
+            val markerCopy = fileReader.copy(stage.resolve(MARKER), markerFile)
+            keys[markerFile] = markerCopy.key
+            hashes[markerFile] = markerCopy.digest
+            verifyCopy(markerFile, markerCopy, hash(stage.resolve(MARKER)))
             val tree = snapshot(stage, true)
             for (directory in tree.directories.sortedBy { it.length }) {
                 checkClaim(keys)
                 val path = Files.createDirectory(root.resolve(directory))
-                keys[path] = checkNotNull(Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
+                keys[path] = entryKey(path)
             }
             for ((name, entry) in tree.files) {
                 checkClaim(keys)
                 val path = root.resolve(name)
-                copyFile(stage.resolve(name), path)
-                check(hash(path) == entry.hash) { "Published distribution bytes changed." }
-                keys[path] = checkNotNull(Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
-                hashes[path] = entry.hash
+                val copied = copyFile(stage.resolve(name), path)
+                keys[path] = copied.key
+                hashes[path] = copied.digest
+                verifyCopy(path, copied, entry.hash)
             }
             checkClaim(keys)
             owned(root)
             check(hash(markerFile) == hashes[markerFile]) { "Claim marker changed before publication." }
             complete = true
+        } catch (problem: Exception) {
+            failure = problem
+            throw problem
         } finally {
-            if (!complete) cleanupClaim(keys, hashes)
+            if (!complete) recoverOwned(failure, { cleanupClaim(keys, hashes) })
         }
     }
 
-    private fun checkClaim(keys: Map<Path, Any>) {
+    /** Recovery phases are independent; cancellation is remembered while owned work is bounded. */
+    private fun recoverOwned(
+        primary: Exception?,
+        vararg phases: () -> Unit,
+    ) {
+        var interrupted = Thread.interrupted()
+        var recoveryFailure: IllegalStateException? = null
+        try {
+            for (phase in phases) {
+                try {
+                    phase()
+                } catch (problem: Exception) {
+                    if (primary != null) {
+                        primary.addSuppressed(problem)
+                    } else if (recoveryFailure ==
+                        null
+                    ) {
+                        recoveryFailure = IllegalStateException("Owned recovery incomplete; preserve retained state.", problem)
+                    } else {
+                        recoveryFailure.addSuppressed(problem)
+                    }
+                } finally {
+                    interrupted = Thread.interrupted() || interrupted
+                }
+            }
+        } finally {
+            interrupted = Thread.interrupted() || interrupted
+            if (interrupted) Thread.currentThread().interrupt()
+        }
+        if (recoveryFailure != null) throw recoveryFailure
+    }
+
+    private fun entryKey(path: Path): String =
+        checkNotNull(Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()) {
+            "Provider cannot identify an owned entry. Preserve it and choose another location."
+        }.toString()
+
+    private fun verifyCopy(
+        path: Path,
+        proof: CopyProof,
+        expectedHash: String,
+    ) {
+        safePath(path)
+        val before = installerFileStamp(path, 512 * 1_048_576)
+        check(before.key == proof.key && before.size == proof.size && proof.digest == expectedHash) {
+            "Copied entry identity changed; foreign replacements are not owned."
+        }
+        check(hash(path) == proof.digest && installerFileStamp(path, 512 * 1_048_576) == before) {
+            "Copied entry bytes or identity changed; preserve it."
+        }
+    }
+
+    private fun checkClaim(keys: Map<Path, String>) {
         for ((path, key) in keys) {
             safePath(path)
-            check(Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey() == key) {
+            check(entryKey(path) == key) {
                 "Claimed installation entry was replaced. Preserve it before retrying."
             }
         }
     }
 
     private fun cleanupClaim(
-        keys: Map<Path, Any>,
+        keys: Map<Path, String>,
         hashes: Map<Path, String>,
     ) {
         val root = keys.keys.first()
         if (!Files.isDirectory(root, NOFOLLOW_LINKS) || Files.isSymbolicLink(root)) return
         val entries = Files.walk(root).use { it.toList() }
         if (entries.toSet() != keys.keys || entries.any { Files.isSymbolicLink(it) }) return
-        if (entries.any { Files.readAttributes(it, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey() != keys[it] }) return
+        if (entries.any { entryKey(it) != keys[it] }) return
         if (hashes.any { (path, expected) -> hash(path) != expected }) return
         for (path in entries.sortedByDescending { it.nameCount }) {
             checkClaim(keys.filterKeys { Files.exists(it, NOFOLLOW_LINKS) })
