@@ -29,6 +29,8 @@ replay_pid*
 
 # Ignore Gradle build output directory
 build
+!buildSrc/src/main/kotlin/org/fruitandfaults/build/
+!buildSrc/src/test/kotlin/org/fruitandfaults/build/
 
 # Ignore Kotlin plugin data
 .kotlin

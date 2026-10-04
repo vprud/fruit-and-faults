@@ -1,0 +1,97 @@
+# Phase A installation smoke evidence
+
+Task 13 evidence, 2026-10-04. Every executed installer task used explicit
+temporary home, distribution, profile, local-app-data, XDG, PATH-file, shell,
+OS, current-PATH, and JDK inputs. No real user profile, user PATH, registry,
+installation directory, or learner workspace was changed.
+
+| Native platform | Shell / JDK | Result |
+| --- | --- | --- |
+| Windows | PowerShell/cmd; JDK 26 required | **UNVERIFIED**: no native Windows runner available. Windows root/PATH and registry argument decisions have automated tests using an injected boundary; these are not native evidence. |
+| macOS 26.5.2 (build 25F84) | `/bin/zsh`; Temurin java/javac 26.0.1 | **PASS**: setup, installed launcher, sourced temporary profile command lookup, unchanged repeat setup, refusal without force, owned uninstall and repeated uninstall. |
+| Linux | Bash/zsh; JDK 26 required | **UNVERIFIED**: no native Linux runner available. XDG/default roots and Bash/zsh ownership have filesystem tests on macOS; these are not native evidence. |
+
+The three-platform acceptance criterion remains open until native Windows and
+Linux runs are recorded. Never label a platform-name override as a native run.
+
+## Executed macOS recipe
+
+From the CLI source checkout, `mktemp -d /private/tmp/fruit-and-faults-task13.XXXXXX`
+created `/private/tmp/fruit-and-faults-task13.0dQv9v`. The following arguments
+were supplied to **every** setup/uninstall invocation:
+
+```sh
+-PcliUserHome="/private/tmp/fruit-and-faults-task13.0dQv9v/Дом пользователя"
+-PcliInstallRoot="/private/tmp/fruit-and-faults-task13.0dQv9v/Install Дистрибутив"
+-PcliProfile="/private/tmp/fruit-and-faults-task13.0dQv9v/Profile zsh"
+-PcliLocalAppData="/private/tmp/fruit-and-faults-task13.0dQv9v/App Data"
+-PcliXdgDataHome="/private/tmp/fruit-and-faults-task13.0dQv9v/XDG Data"
+-PcliUserPathFile="/private/tmp/fruit-and-faults-task13.0dQv9v/User PATH"
+-PcliCurrentPath=/usr/bin:/bin
+-PcliShell=/bin/zsh
+-PcliOsName="Mac OS X"
+-PcliJavaHome=<explicit installed Temurin 26.0.1 directory>
+```
+
+The installed JDK was read/executed, never changed. Its commands reported
+`openjdk version "26.0.1"`, Temurin `26.0.1+8`, and `javac 26.0.1`.
+
+1. `./gradlew setupCli --offline --console=plain <all arguments above>`:
+   exit 0, detected `java 26.0.1; javac 26.0.1`, installed the distribution,
+   created the owned command link and marked zsh profile, and printed
+   `fruit-and-faults 0.1.0` from the installed launcher.
+2. `/bin/zsh -f -c 'source "$1"; command -v fruit-and-faults; fruit-and-faults --version' installation-smoke '<temporary Profile zsh>'`:
+   exit 0; lookup resolved the temporary `Дом пользователя/.local/bin`
+   command; version was `fruit-and-faults 0.1.0`. The PATH change existed only
+   in this disposable child shell.
+3. Repeat setup with identical arguments and no force flag: exit 0.
+   SHA-256 of the installation marker and profile was identical before/after:
+   marker `490dd56c174a2f75ca2d9d87b1eb5df22b687d483c7e225dfc3d90ed2b6a3160`;
+   profile `1d3e2bece4839dc4a495194f6e522cbaa49a988682def7d60728118a05cf3c3b`.
+4. `./gradlew uninstallCli --offline --console=plain <same arguments>`:
+   expected failure requiring `-PcliForce=true`; existing state was retained.
+5. `./gradlew uninstallCli -PcliForce=true --offline --console=plain <same arguments>`:
+   exit 0; exact owned distribution and command marker/link were removed;
+   the temporary profile became empty. The home and smoke root were retained.
+6. Repeat forced uninstall with the same arguments: exit 0; no additional
+   user state was removed. Temporary empty directories/profile remain for
+   inspection; no broad cleanup was performed.
+
+## Native Windows and Linux runs still required
+
+On an explicitly documented native runner, record OS/build, shell, JDK
+`java -version` and `javac -version`, exact argument list, exit codes, command
+lookup/version, repeat setup, and repeat owned uninstall. Include spaces and
+Cyrillic in the temporary home/root. Use all overrides consistently.
+
+For Windows, choose a dedicated temporary home, temporary LOCALAPPDATA root,
+and `-PcliUserPathFile=<temporary file>`. Seed that file with unrelated entries
+and an upper/lower-case duplicate of the target bin; verify de-duplication and
+preservation. Run the installed `.bat` launcher from PowerShell and cmd. This
+file boundary protects the actual user registry. Real registry smoke, if later
+desired, requires a disposable Windows account and separate authorization.
+
+For Linux, choose a dedicated temporary home and XDG root, explicitly select
+`-PcliShell=/bin/bash` or `/bin/zsh`, and override the matching temporary
+profile. Run `setupCli`, source only that temporary profile in a child shell,
+verify command lookup and `--version`, then run repeated forced uninstall.
+Repeat with default data-root selection and the other supported shell. An
+unknown shell must receive manual guidance and no guessed profile edit.
+
+## Automated and distribution evidence
+
+Installer tests use canonical temporary roots, real safe filesystem operations,
+and in-memory/file/injected Windows PATH boundaries. They cover marker/version
+ownership, foreign/modified files, symlink/path rejection, staged copy failure,
+spaces/Unicode, repeated setup/removal, user PATH preservation, opaque profile
+bytes/CRLF/permissions, exact marked blocks, and bounded verification output.
+Owned Java fixtures verify process nonzero exit, truncation, timeout, and
+interruption/termination without sleeps or network services.
+
+`./gradlew :app:clean :app:installDist :app:distZip --offline` passed. The ZIP
+contains `bin/fruit-and-faults`, `bin/fruit-and-faults.bat`, the app JAR with
+course resources, and four runtime dependency JARs. A clean generated-output
+build eliminated obsolete sample launcher artifacts from the existing cache.
+Root `./gradlew check` includes the buildSrc installer tests through the bounded
+`checkInstaller` task, plus app tests, Spotless, Checkstyle, Error Prone/NullAway,
+and JaCoCo verification.

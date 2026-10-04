@@ -1,0 +1,510 @@
+package org.fruitandfaults.build
+
+import org.junit.jupiter.api.Assertions.assertArrayEquals
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+import java.nio.file.Files
+import java.nio.file.Path
+
+class CliInstallerTest {
+    @TempDir lateinit var temp: Path
+
+    @BeforeEach fun canonicalTemporaryRoot() {
+        temp = temp.toRealPath()
+    }
+
+    private fun layout(
+        platform: CliPlatform = CliPlatform.MACOS,
+        shell: String = "/bin/zsh",
+    ): InstallLayout {
+        val home = temp.resolve("Дом пользователя")
+        Files.createDirectories(home)
+        return platform.layout(home, temp.resolve("Local App Data"), null, shell)
+    }
+
+    private fun distribution(version: String = "one"): Path {
+        val dist = temp.resolve("distribution-$version")
+        Files.createDirectories(dist.resolve("bin"))
+        Files.createDirectories(dist.resolve("lib"))
+        Files.writeString(dist.resolve("bin/fruit-and-faults"), "launcher-$version")
+        Files.writeString(dist.resolve("bin/fruit-and-faults.bat"), "windows-$version")
+        Files.writeString(dist.resolve("lib/app.jar"), "jar-$version")
+        return dist
+    }
+
+    @Test fun `platform roots respect Windows app data and Unix conventions`() {
+        assertEquals(temp.resolve("Local App Data/Programs/FruitAndFaults"), layout(CliPlatform.WINDOWS).root)
+        assertEquals(temp.resolve("Дом пользователя/Library/Application Support/FruitAndFaults"), layout().root)
+        assertEquals(temp.resolve("Дом пользователя/.local/share/fruit-and-faults"), layout(CliPlatform.LINUX).root)
+        assertEquals(
+            temp.resolve("XDG/fruit-and-faults"),
+            CliPlatform.LINUX.layout(temp.resolve("home"), null, temp.resolve("XDG"), "/bin/bash").root,
+        )
+        assertEquals(CliPlatform.WINDOWS, CliPlatform.detect("Windows 11"))
+        assertEquals(CliPlatform.MACOS, CliPlatform.detect("Mac OS X"))
+        assertThrows(IllegalArgumentException::class.java) { CliPlatform.detect("Plan 9") }
+    }
+
+    @Test fun `install update repeat and uninstall own only the marked distribution`() {
+        val target = layout()
+        val installer = CliInstaller()
+        installer.install(distribution(), target, "0.1.0")
+        val marker = Files.readAllBytes(target.root.resolve(CliInstaller.MARKER))
+        installer.install(distribution("two"), target, "0.2.0")
+        assertEquals("jar-two", Files.readString(target.root.resolve("lib/app.jar")))
+        assertFalse(marker.contentEquals(Files.readAllBytes(target.root.resolve(CliInstaller.MARKER))))
+        installer.install(temp.resolve("distribution-two"), target, "0.2.0")
+        installer.uninstall(target)
+        installer.uninstall(target)
+        assertFalse(Files.exists(target.root))
+        assertTrue(Files.exists(target.home))
+    }
+
+    @Test fun `unmarked foreign and modified installations are preserved`() {
+        val target = layout()
+        Files.createDirectories(target.root)
+        Files.writeString(target.root.resolve("foreign.txt"), "keep")
+        assertThrows(IllegalStateException::class.java) { CliInstaller().install(distribution(), target, "0.1.0") }
+        assertThrows(IllegalStateException::class.java) { CliInstaller().uninstall(target) }
+        assertEquals("keep", Files.readString(target.root.resolve("foreign.txt")))
+    }
+
+    @Test fun `unknown marker version and added files prevent uninstall`() {
+        val target = layout()
+        val installer = CliInstaller()
+        installer.install(distribution(), target, "0.1.0")
+        Files.writeString(target.root.resolve("learner.txt"), "keep")
+        assertThrows(IllegalStateException::class.java) { installer.uninstall(target) }
+        assertEquals("keep", Files.readString(target.root.resolve("learner.txt")))
+        Files.delete(target.root.resolve("learner.txt"))
+        val marker = target.root.resolve(CliInstaller.MARKER)
+        Files.writeString(marker, Files.readString(marker).replace("formatVersion=1", "formatVersion=99"))
+        assertThrows(IllegalStateException::class.java) { installer.uninstall(target) }
+        assertTrue(Files.exists(target.root.resolve("lib/app.jar")))
+    }
+
+    @Test fun `symlink ancestors distribution entries and broad roots are rejected before mutation`() {
+        val target = layout()
+        val outside = Files.createDirectory(temp.resolve("outside"))
+        val link = temp.resolve("linked")
+        Files.createSymbolicLink(link, outside)
+        assertThrows(IllegalStateException::class.java) {
+            CliInstaller().install(distribution(), target.copy(root = link.resolve("install")), "0.1.0")
+        }
+        assertFalse(Files.exists(outside.resolve("install")))
+        val dist = distribution("symlink")
+        Files.createSymbolicLink(dist.resolve("lib/link.jar"), temp.resolve("secret"))
+        assertThrows(IllegalStateException::class.java) { CliInstaller().install(dist, target, "0.1.0") }
+        assertFalse(Files.exists(target.root))
+        assertThrows(IllegalArgumentException::class.java) {
+            CliPlatform.LINUX.layout(target.home, null, null, "/bin/bash", target.home)
+        }
+    }
+
+    @Test fun `failed staged copy keeps the previous valid installation`() {
+        val target = layout()
+        CliInstaller().install(distribution(), target, "0.1.0")
+        val original = Files.readAllBytes(target.root.resolve(CliInstaller.MARKER))
+        val failing = CliInstaller { _, _ -> throw java.io.IOException("injected copy failure") }
+        assertThrows(java.io.IOException::class.java) { failing.install(distribution("two"), target, "0.2.0") }
+        assertArrayEquals(original, Files.readAllBytes(target.root.resolve(CliInstaller.MARKER)))
+        assertEquals("jar-one", Files.readString(target.root.resolve("lib/app.jar")))
+    }
+
+    @Test fun `Windows user PATH deduplicates case insensitively and preserves unrelated entries`() {
+        val target = layout(CliPlatform.WINDOWS)
+        val bin = target.root.resolve("bin").toString()
+        val store = MemoryPath("C:\\Windows;${bin.uppercase()};C:\\Other;$bin")
+        val exposure = CliPathExposure(store)
+        exposure.add(target, "")
+        assertEquals("C:\\Windows;$bin;C:\\Other", store.value)
+        exposure.add(target, "")
+        exposure.remove(target)
+        exposure.remove(target)
+        assertEquals("C:\\Windows;C:\\Other", store.value)
+    }
+
+    @Test fun `Unix setup is repeatable and preserves profile bytes and line endings`() {
+        for ((platform, shell, profileName) in listOf(
+            Triple(CliPlatform.MACOS, "/bin/zsh", ".zprofile"),
+            Triple(CliPlatform.LINUX, "/bin/bash", ".bashrc"),
+            Triple(CliPlatform.LINUX, "/bin/zsh", ".zshrc"),
+            Triple(CliPlatform.MACOS, "/bin/bash", ".bash_profile"),
+        )) {
+            val target = layout(platform, shell)
+            val profile = target.home.resolve(profileName)
+            val before = "# настройки\r\nexport CUSTOM='keep'".toByteArray(Charsets.UTF_8)
+            Files.write(profile, before)
+            CliInstaller().install(distribution(profileName), target, "0.1.0")
+            val exposure = CliPathExposure(MemoryPath(""))
+            exposure.add(target, "/usr/bin:/bin")
+            val first = Files.readAllBytes(profile)
+            assertTrue(first.toString(Charsets.UTF_8).contains("# >>> fruit-and-faults >>>"))
+            assertTrue(Files.isSymbolicLink(target.command))
+            exposure.add(target, "/usr/bin:/bin")
+            assertArrayEquals(first, Files.readAllBytes(profile))
+            exposure.remove(target)
+            assertArrayEquals(before, Files.readAllBytes(profile))
+            assertFalse(Files.exists(target.command, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+            CliInstaller().uninstall(target)
+        }
+    }
+
+    @Test fun `existing PATH and unknown shell avoid unnecessary profile writes`() {
+        val target = layout(CliPlatform.LINUX, "/bin/fish")
+        CliInstaller().install(distribution(), target, "0.1.0")
+        val exposure = CliPathExposure(MemoryPath(""))
+        val message = exposure.add(target, "/usr/bin")
+        assertTrue(message.contains("manual", ignoreCase = true))
+        assertFalse(Files.exists(target.home.resolve(".profile")))
+        exposure.remove(target)
+        CliInstaller().uninstall(target)
+        val known = layout(CliPlatform.LINUX, "/bin/bash")
+        CliInstaller().install(temp.resolve("distribution-one"), known, "0.1.0")
+        exposure.add(known, known.command.parent.toString() + ":/usr/bin")
+        assertFalse(Files.exists(known.profile!!))
+    }
+
+    @Test fun `foreign command and symlink profile are never overwritten`() {
+        val target = layout()
+        CliInstaller().install(distribution(), target, "0.1.0")
+        Files.createDirectories(target.command.parent)
+        Files.writeString(target.command, "foreign")
+        val exposure = CliPathExposure(MemoryPath(""))
+        assertThrows(IllegalStateException::class.java) { exposure.add(target, "") }
+        assertEquals("foreign", Files.readString(target.command))
+        Files.delete(target.command)
+        val outside = temp.resolve("outside-profile")
+        Files.writeString(outside, "keep")
+        Files.createSymbolicLink(target.profile!!, outside)
+        assertThrows(IllegalStateException::class.java) { exposure.add(target, "") }
+        assertEquals("keep", Files.readString(outside))
+        assertFalse(Files.exists(target.command, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+    }
+
+    @Test fun `JDK verification requires both java and javac 26 without downloading`() {
+        val ok =
+            CommandRunner {
+                args,
+                _,
+                ->
+                ProbeResult(0, if (args[0].contains("javac")) "javac 26.0.1" else "openjdk version \"26.0.1\"")
+            }
+        assertTrue(JdkVerifier(ok).verify(temp.resolve("JDK 26"), CliPlatform.MACOS).contains("26.0.1"))
+        for (result in listOf(
+            ProbeResult(0, "javac 25"),
+            ProbeResult(1, "missing"),
+            ProbeResult(0, "garbage"),
+            ProbeResult(0, "", timedOut = true),
+        )) {
+            val bad = CommandRunner { args, _ -> if (args[0].contains("javac")) result else ProbeResult(0, "openjdk version \"26\"") }
+            assertThrows(IllegalStateException::class.java) { JdkVerifier(bad).verify(temp, CliPlatform.WINDOWS) }
+        }
+    }
+
+    @Test fun `installed launcher verification checks exact version and failures`() {
+        val target = layout()
+        CliInstaller().install(distribution(), target, "0.1.0")
+        val runner =
+            CommandRunner { args, env ->
+                assertEquals(listOf(target.root.resolve("bin/fruit-and-faults").toString(), "--version"), args)
+                assertEquals(temp.resolve("JDK 26").toString(), env["JAVA_HOME"])
+                ProbeResult(0, "fruit-and-faults 0.1.0\n")
+            }
+        CliVerifier(runner).verify(target, "0.1.0", temp.resolve("JDK 26"))
+        assertThrows(IllegalStateException::class.java) {
+            CliVerifier(CommandRunner { _, _ -> ProbeResult(0, "fruit-and-faults 0.2.0") }).verify(target, "0.1.0", temp)
+        }
+        assertThrows(IllegalStateException::class.java) {
+            CliVerifier(CommandRunner { _, _ -> ProbeResult(0, "", timedOut = true) }).verify(target, "0.1.0", temp)
+        }
+    }
+
+    @Test fun `modified owned files and marker root cannot authorize deletion`() {
+        val target = layout()
+        val installer = CliInstaller()
+        installer.install(distribution(), target, "0.1.0")
+        Files.writeString(target.root.resolve("lib/app.jar"), "user modification")
+        assertThrows(IllegalStateException::class.java) { installer.uninstall(target) }
+        assertEquals("user modification", Files.readString(target.root.resolve("lib/app.jar")))
+        Files.writeString(target.root.resolve("lib/app.jar"), "jar-one")
+        val other = target.copy(root = temp.resolve("other"))
+        Files.move(target.root, other.root)
+        assertThrows(IllegalStateException::class.java) { installer.uninstall(other) }
+        assertTrue(Files.exists(other.root.resolve("lib/app.jar")))
+    }
+
+    @Test fun `replacement requires explicit force while unchanged setup needs none`() {
+        val target = layout()
+        val installer = CliInstaller()
+        installer.install(distribution(), target, "0.1.0", false)
+        val marker = Files.readAllBytes(target.root.resolve(CliInstaller.MARKER))
+        installer.install(temp.resolve("distribution-one"), target, "0.1.0", false)
+        assertArrayEquals(marker, Files.readAllBytes(target.root.resolve(CliInstaller.MARKER)))
+        assertThrows(IllegalStateException::class.java) { installer.install(distribution("two"), target, "0.2.0", false) }
+        assertEquals("jar-one", Files.readString(target.root.resolve("lib/app.jar")))
+    }
+
+    @Test fun `modified marked profile content is preserved on uninstall`() {
+        val target = layout()
+        CliInstaller().install(distribution(), target, "0.1.0")
+        val exposure = CliPathExposure(MemoryPath(""))
+        exposure.add(target, "")
+        val profile = target.profile!!
+        Files.writeString(profile, Files.readString(profile).replace("export PATH=", "export CUSTOM="))
+        val before = Files.readAllBytes(profile)
+        assertThrows(IllegalStateException::class.java) { exposure.remove(target) }
+        assertArrayEquals(before, Files.readAllBytes(profile))
+        assertTrue(Files.isSymbolicLink(target.command))
+    }
+
+    @Test fun `Windows PATH boundary changes are preserved instead of overwritten`() {
+        val target = layout(CliPlatform.WINDOWS)
+        val store =
+            object : UserPathStore {
+                var reads = 0
+                var value = "C:\\Old"
+
+                override fun read(): String {
+                    if (++reads == 2) value = "C:\\New user entry"
+                    return value
+                }
+
+                override fun write(value: String) {
+                    this.value = value
+                }
+            }
+        assertThrows(IllegalStateException::class.java) { CliPathExposure(store).add(target, "") }
+        assertEquals("C:\\New user entry", store.value)
+    }
+
+    @Test fun `profile edits preserve opaque bytes and existing file permissions`() {
+        val target = layout()
+        CliInstaller().install(distribution(), target, "0.1.0")
+        val profile = target.profile!!
+        Files.createDirectories(profile.parent)
+        val bytes = byteArrayOf(0xff.toByte(), 0x80.toByte(), '\n'.code.toByte())
+        Files.write(profile, bytes)
+        val permissions =
+            java.nio.file.attribute.PosixFilePermissions
+                .fromString("rw-r--r--")
+        Files.setPosixFilePermissions(profile, permissions)
+        val exposure = CliPathExposure(MemoryPath(""))
+        exposure.add(target, "")
+        assertEquals(permissions, Files.getPosixFilePermissions(profile))
+        exposure.remove(target)
+        assertArrayEquals(bytes, Files.readAllBytes(profile))
+        assertEquals(permissions, Files.getPosixFilePermissions(profile))
+    }
+
+    @Test fun `truncated process output cannot become authoritative PATH or version`() {
+        val runner = CommandRunner { _, _ -> ProbeResult(0, "C:\\Windows", truncated = true) }
+        assertThrows(IllegalStateException::class.java) { WindowsUserPathStore(runner, CliPlatform.WINDOWS).read() }
+        val target = layout()
+        CliInstaller().install(distribution(), target, "0.1.0")
+        assertThrows(IllegalStateException::class.java) {
+            CliVerifier(CommandRunner { _, _ -> ProbeResult(0, "fruit-and-faults 0.1.0", truncated = true) }).verify(target, "0.1.0", temp)
+        }
+    }
+
+    @Test fun `Windows registry adapter uses only user environment and safe separate values`() {
+        val commands = mutableListOf<Pair<List<String>, Map<String, String>>>()
+        val store =
+            WindowsUserPathStore(
+                CommandRunner {
+                    args,
+                    environment,
+                    ->
+                    commands.add(args to environment)
+                    ProbeResult(0, "C:\\Other")
+                },
+                CliPlatform.WINDOWS,
+            )
+        assertEquals("C:\\Other", store.read())
+        val path = "C:\\Дом пользователя;C:\\quoted ' & entry"
+        store.write(path)
+        assertEquals(listOf("powershell.exe", "-NoProfile", "-NonInteractive", "-Command"), commands[0].first.take(4))
+        assertTrue(commands[0].first.last().contains("GetEnvironmentVariable('Path','User')"))
+        assertTrue(commands[1].first.last().contains("SetEnvironmentVariable('Path',\$env:FRUIT_AND_FAULTS_USER_PATH,'User')"))
+        assertFalse(commands[1].first.last().contains(path))
+        assertEquals(path, commands[1].second["FRUIT_AND_FAULTS_USER_PATH"])
+    }
+
+    @Test fun `Windows launcher uses a fixed command name inside the explicit install bin`() {
+        val target = layout(CliPlatform.WINDOWS)
+        CliInstaller().install(distribution(), target, "0.1.0")
+        val runner =
+            object : CommandRunner {
+                override fun run(
+                    arguments: List<String>,
+                    environment: Map<String, String>,
+                ): ProbeResult = error("Working directory is required")
+
+                override fun runInDirectory(
+                    arguments: List<String>,
+                    environment: Map<String, String>,
+                    directory: Path,
+                ): ProbeResult {
+                    assertEquals(listOf("cmd.exe", "/d", "/c", "fruit-and-faults.bat", "--version"), arguments)
+                    assertEquals(target.root.resolve("bin"), directory)
+                    assertEquals(temp.resolve("JDK 26").toString(), environment["JAVA_HOME"])
+                    return ProbeResult(0, "fruit-and-faults 0.1.0")
+                }
+            }
+        assertEquals("fruit-and-faults 0.1.0", CliVerifier(runner).verify(target, "0.1.0", temp.resolve("JDK 26")))
+    }
+
+    @Test fun `distribution cannot supply the reserved ownership marker`() {
+        val target = layout()
+        val dist = distribution()
+        Files.writeString(dist.resolve(CliInstaller.MARKER), "foreign marker")
+        assertThrows(IllegalStateException::class.java) { CliInstaller().install(dist, target, "0.1.0") }
+        assertFalse(Files.exists(target.root))
+    }
+
+    @Test fun `failed staging never deletes a foreign replacement directory`() {
+        val target = layout()
+        var replacement: Path? = null
+        val installer =
+            CliInstaller { _, destination ->
+                val stage = destination.parent.parent
+                Files.move(stage, temp.resolve("retained-original-stage"))
+                Files.createDirectory(stage)
+                Files.writeString(stage.resolve("foreign.txt"), "preserve")
+                replacement = stage
+                throw java.io.IOException("injected stage replacement")
+            }
+        assertThrows(java.io.IOException::class.java) { installer.install(distribution(), target, "0.1.0") }
+        assertEquals("preserve", Files.readString(replacement!!.resolve("foreign.txt")))
+        assertFalse(Files.exists(target.root))
+    }
+
+    @Test fun `real owned process bounds output and reports nonzero exit`() {
+        val runner = BoundedCommandRunner(5)
+        val output = runner.run(probeArguments("output"), emptyMap())
+        assertEquals(0, output.exitCode)
+        assertTrue(output.truncated)
+        assertTrue(output.output.toByteArray(Charsets.UTF_8).size <= 16_384)
+        val failed = runner.run(probeArguments("failure"), emptyMap())
+        assertEquals(7, failed.exitCode)
+        assertTrue(failed.output.contains("fixture failure"))
+    }
+
+    @Test fun `real process timeout terminates the owned process without sleeps`() {
+        val pidFile = temp.resolve("timeout.pid")
+        val result = BoundedCommandRunner(2).run(probeArguments("busy", pidFile.toString()), emptyMap())
+        assertTrue(result.timedOut)
+        val pid = Files.readString(pidFile).toLong()
+        ProcessHandle.of(pid).ifPresent { it.onExit().get(3, java.util.concurrent.TimeUnit.SECONDS) }
+        assertFalse(ProcessHandle.of(pid).map { it.isAlive }.orElse(false))
+    }
+
+    @Test fun `interrupted process terminates and restores the worker interrupt flag`() {
+        val pidFile = temp.resolve("interruption.pid")
+        val failure =
+            java.util.concurrent.atomic
+                .AtomicReference<Throwable>()
+        val interrupted =
+            java.util.concurrent.atomic
+                .AtomicBoolean(false)
+        val worker =
+            Thread {
+                try {
+                    BoundedCommandRunner().run(probeArguments("busy", pidFile.toString()), emptyMap())
+                } catch (
+                    problem: Throwable,
+                ) {
+                    failure.set(problem)
+                } finally {
+                    interrupted.set(Thread.currentThread().isInterrupted)
+                }
+            }
+        worker.start()
+        try {
+            val deadline =
+                System.nanoTime() +
+                    java.util.concurrent.TimeUnit.SECONDS
+                        .toNanos(10)
+            while (!Files.exists(pidFile) && worker.isAlive && System.nanoTime() < deadline) Thread.yield()
+            assertTrue(Files.exists(pidFile), "Owned fixture must start before interruption")
+            worker.interrupt()
+            worker.join(3_000)
+            assertFalse(worker.isAlive)
+            assertTrue(failure.get() is IllegalStateException)
+            assertTrue(interrupted.get())
+            val pid = Files.readString(pidFile).toLong()
+            ProcessHandle.of(pid).ifPresent { it.onExit().get(3, java.util.concurrent.TimeUnit.SECONDS) }
+            assertFalse(ProcessHandle.of(pid).map { it.isAlive }.orElse(false))
+        } finally {
+            worker.interrupt()
+            worker.join(3_000)
+        }
+    }
+
+    private fun probeArguments(
+        mode: String,
+        path: String = "unused",
+    ): List<String> {
+        val javaHome = Path.of(System.getProperty("java.home"))
+        val executable = javaHome.resolve(if (System.getProperty("os.name").startsWith("Windows")) "bin/java.exe" else "bin/java")
+        val classes =
+            Path.of(
+                InstallerProbeFixture::class.java.protectionDomain.codeSource.location
+                    .toURI(),
+            )
+        val kotlin =
+            Path.of(
+                kotlin.Unit::class.java.protectionDomain.codeSource.location
+                    .toURI(),
+            )
+        return listOf(
+            executable.toString(),
+            "-Duser.home=$temp",
+            "-XX:-UsePerfData",
+            "-cp",
+            "$classes${java.io.File.pathSeparator}$kotlin",
+            InstallerProbeFixture::class.java.name,
+            mode,
+            path,
+        )
+    }
+
+    private class MemoryPath(
+        var value: String,
+    ) : UserPathStore {
+        override fun read(): String = value
+
+        override fun write(value: String) {
+            this.value = value
+        }
+    }
+}
+
+/** Owned subprocess fixture: no network, user environment writes, or sleeps. */
+object InstallerProbeFixture {
+    @JvmStatic fun main(arguments: Array<String>) {
+        when (arguments[0]) {
+            "output" -> {
+                System.out.print("я".repeat(20_000))
+            }
+
+            "failure" -> {
+                System.err.print("fixture failure")
+                kotlin.system.exitProcess(7)
+            }
+
+            "busy" -> {
+                val ready = Path.of(arguments[1])
+                val pending = ready.resolveSibling("${ready.fileName}.tmp")
+                Files.writeString(pending, ProcessHandle.current().pid().toString())
+                Files.move(pending, ready, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+                while (true) Thread.onSpinWait()
+            }
+        }
+    }
+}
