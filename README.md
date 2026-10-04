@@ -102,6 +102,8 @@ paths, not symlinks. Custom install roots must be dedicated directories.
 Windows install roots cannot contain semicolons, quotes, or control characters.
 Ownership markers, profiles, and redirected PATH state must be regular files
 under 1 MiB; bounded read workers reject substituted or special files safely.
+Distribution copies also use bounded owned workers and exclusive destinations.
+Uncertain partial or substituted staging state is retained for inspection.
 
 Native platform evidence and the temporary-root smoke recipe are recorded in
 [the installation smoke matrix](docs/testing/phase-a-installation-smoke.md).

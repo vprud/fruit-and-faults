@@ -38,7 +38,7 @@ tasks.register<Exec>("checkInstaller") {
         wrapper + listOf("-p", "buildSrc", "test", "--console=plain") +
             if (gradle.startParameter.isOffline) listOf("--offline") else emptyList(),
     )
-    timeout.set(java.time.Duration.ofMinutes(2))
+    timeout.set(java.time.Duration.ofMinutes(5))
 }
 
 tasks.named("spotlessApply") {

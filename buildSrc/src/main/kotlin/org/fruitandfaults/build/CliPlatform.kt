@@ -90,7 +90,12 @@ internal fun validateWindowsRoot(
     root: Path,
 ) {
     CliPlatform.absolute(root)
-    require(platform != CliPlatform.WINDOWS || root.toString().none { it == ';' || it == '"' }) {
+    if (platform == CliPlatform.WINDOWS) validateWindowsRootText(root.toString())
+}
+
+/** Validate raw Windows PATH entry syntax before a platform path parser can reject it. */
+internal fun validateWindowsRootText(root: String) {
+    require(root.none { it == ';' || it == '"' || it.isISOControl() }) {
         "Windows install roots must not contain semicolons, quotes, or control characters. Choose a dedicated PATH-safe directory."
     }
 }

@@ -8,7 +8,6 @@ import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
-import java.nio.file.StandardCopyOption.COPY_ATTRIBUTES
 import java.nio.file.attribute.BasicFileAttributes
 import java.util.Base64
 import java.util.UUID
@@ -17,8 +16,7 @@ import java.util.UUID
 class CliInstaller(
     private val fileReader: InstallerFileReader = InstallerFileReader(),
     private val copyFile: (Path, Path) -> Unit = { from, to ->
-        Files.copy(from, to, COPY_ATTRIBUTES)
-        Unit
+        fileReader.copy(from, to)
     },
 ) {
     companion object {
@@ -49,17 +47,36 @@ class CliInstaller(
         safePath(target.root.parent)
         val stage = Files.createTempDirectory(target.root.parent, ".fruit-and-faults-stage-")
         val stageIdentity = Files.readAttributes(stage, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()
+        check(stageIdentity != null) { "Provider cannot identify staging. Preserve it and choose another location." }
+        val stageKeys = linkedMapOf<Path, Any>(stage to stageIdentity)
+        val stageHashes = linkedMapOf<Path, String>()
         var backup: Path? = null
         try {
-            for (directory in source.directories.sortedBy { it.length }) Files.createDirectories(stage.resolve(directory))
+            for (directory in source.directories.sortedBy { it.length }) {
+                val path = Files.createDirectory(stage.resolve(directory))
+                stageKeys[path] = checkNotNull(Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
+            }
             for (name in source.files.keys) {
                 safePath(distribution.resolve(name))
                 check(hash(distribution.resolve(name)) == source.files.getValue(name).hash) { "Distribution changed during staging." }
                 copyFile(distribution.resolve(name), stage.resolve(name))
+                check(hash(stage.resolve(name)) == source.files.getValue(name).hash) { "Copied distribution bytes changed." }
+                stageKeys[stage.resolve(name)] =
+                    checkNotNull(Files.readAttributes(stage.resolve(name), BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
+                stageHashes[stage.resolve(name)] = source.files.getValue(name).hash
             }
             val staged = snapshot(stage, false)
             check(staged.hashes() == source.hashes()) { "Distribution changed during staging." }
-            Files.writeString(stage.resolve(MARKER), marker(target.root, version, UUID.randomUUID().toString(), staged))
+            Files.writeString(
+                stage.resolve(MARKER),
+                marker(target.root, version, UUID.randomUUID().toString(), staged),
+                java.nio.file.StandardOpenOption.CREATE_NEW,
+                java.nio.file.StandardOpenOption.WRITE,
+                NOFOLLOW_LINKS,
+            )
+            stageKeys[stage.resolve(MARKER)] =
+                checkNotNull(Files.readAttributes(stage.resolve(MARKER), BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
+            stageHashes[stage.resolve(MARKER)] = hash(stage.resolve(MARKER))
             if (old != null) {
                 check(owned(target.root).bytes.contentEquals(old.bytes)) { "Installation changed before replacement." }
                 backup = target.root.resolveSibling(".fruit-and-faults-backup-${UUID.randomUUID()}")
@@ -74,7 +91,7 @@ class CliInstaller(
             if (backup != null) deleteOwned(backup, old!!, target.root)
         } finally {
             if (Files.exists(stage, NOFOLLOW_LINKS)) {
-                deleteStaging(stage, stageIdentity, source.files.keys + source.directories + MARKER)
+                cleanupClaim(stageKeys, stageHashes)
             }
         }
     }
@@ -92,7 +109,7 @@ class CliInstaller(
         var complete = false
         try {
             val markerFile = root.resolve(MARKER)
-            Files.copy(stage.resolve(MARKER), markerFile, COPY_ATTRIBUTES)
+            fileReader.copy(stage.resolve(MARKER), markerFile)
             keys[markerFile] = checkNotNull(Files.readAttributes(markerFile, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
             hashes[markerFile] = hash(stage.resolve(MARKER))
             val tree = snapshot(stage, true)
@@ -105,6 +122,7 @@ class CliInstaller(
                 checkClaim(keys)
                 val path = root.resolve(name)
                 copyFile(stage.resolve(name), path)
+                check(hash(path) == entry.hash) { "Published distribution bytes changed." }
                 keys[path] = checkNotNull(Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey())
                 hashes[path] = entry.hash
             }
@@ -291,27 +309,6 @@ class CliInstaller(
         check(fileReader.read(root.resolve(MARKER)).contentEquals(expected.bytes)) { "Marker identity changed during removal." }
         Files.delete(root.resolve(MARKER))
         Files.delete(root)
-    }
-
-    private fun deleteStaging(
-        stage: Path,
-        identity: Any?,
-        allowedNames: Set<String>,
-    ) {
-        // Without stable provider identity, preserve the temporary directory rather than risk foreign cleanup.
-        safePath(stage)
-        if (identity == null || Files.readAttributes(stage, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey() != identity) return
-        val entries = Files.walk(stage).use { it.toList() }
-        if (entries.any { Files.isSymbolicLink(it) || (it != stage && stage.relativize(it).joinToString("/") !in allowedNames) }) return
-        val keys = entries.associateWith { Files.readAttributes(it, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey() }
-        if (keys.values.any { it == null }) return
-        for (path in entries.sortedByDescending { it.nameCount }) {
-            safePath(path)
-            check(Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey() == keys[path]) {
-                "Staged entry changed during cleanup; preserve it."
-            }
-            Files.delete(path)
-        }
     }
 
     private fun move(
