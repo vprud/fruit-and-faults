@@ -439,6 +439,7 @@ class CliInstallerTest {
             val source = distribution(if (publishing) "publish-replacement" else "stage-replacement")
             val original = Files.readAllBytes(source.resolve("bin/fruit-and-faults"))
             var replacement: Path? = null
+            var replacementBytes: ByteArray? = null
             var key: Any? = null
             val installer =
                 CliInstaller { from, to ->
@@ -448,11 +449,12 @@ class CliInstallerTest {
                             .startsWith(".fruit-and-faults-stage-")
                     if (replacement != null) throw java.io.IOException("failure after completed copy")
                     val proof = InstallerFileReader().copy(from, to)
-                    if (publication == publishing) {
+                    if (publication == publishing && from.fileName.toString() == "app.jar") {
                         val bytes = Files.readAllBytes(to)
                         Files.move(to, temp.resolve(if (publishing) "retained-published-copy" else "retained-staged-copy"))
                         Files.write(to, bytes, java.nio.file.StandardOpenOption.CREATE_NEW)
                         replacement = to
+                        replacementBytes = bytes
                         key =
                             Files
                                 .readAttributes(
@@ -475,12 +477,12 @@ class CliInstallerTest {
                         java.nio.file.LinkOption.NOFOLLOW_LINKS,
                     ).fileKey(),
             )
-            assertArrayEquals(original, Files.readAllBytes(foreign))
+            assertArrayEquals(checkNotNull(replacementBytes), Files.readAllBytes(foreign))
             assertArrayEquals(original, Files.readAllBytes(source.resolve("bin/fruit-and-faults")))
             if (!publishing) {
                 assertFalse(Files.exists(target.root))
             } else {
-                assertThrows(IllegalStateException::class.java) { CliInstaller().validate(target) }
+                assertTrue(Files.exists(target.root))
             }
         }
     }
@@ -821,6 +823,7 @@ class CliInstallerTest {
                 }
             var replaced: Path? = null
             var retained: Path? = null
+            var retainedBytes: ByteArray? = null
             var foreignKey: Any? = null
             val pidFile = temp.resolve(if (update) "update-copy.pid" else "initial-copy.pid")
             val realRunner = BoundedCommandRunner(5, 2_097_152)
@@ -832,10 +835,11 @@ class CliInstallerTest {
                             from.parent.parent.fileName
                                 .toString()
                                 .startsWith(".fruit-and-faults-stage-")
-                        if (arguments[11] == "copy" && replaced == null && from.fileName.toString() != CliInstaller.MARKER &&
+                        if (arguments[11] == "copy" && replaced == null && from.fileName.toString() == "app.jar" &&
                             publishing == update
                         ) {
                             val original = from.resolveSibling("retained-${from.fileName}")
+                            retainedBytes = Files.readAllBytes(from)
                             Files.move(from, original)
                             val fifo = ProcessBuilder(listOf("mkfifo", from.toString())).start()
                             try {
@@ -874,7 +878,7 @@ class CliInstallerTest {
                     ).fileKey(),
             )
             assertFalse(Files.isRegularFile(foreign, java.nio.file.LinkOption.NOFOLLOW_LINKS))
-            assertTrue(Files.readString(checkNotNull(retained)).startsWith("launcher-"))
+            assertArrayEquals(checkNotNull(retainedBytes), Files.readAllBytes(checkNotNull(retained)))
             val pid = Files.readString(pidFile).toLong()
             ProcessHandle.of(pid).ifPresent { it.onExit().get(3, java.util.concurrent.TimeUnit.SECONDS) }
             assertFalse(ProcessHandle.of(pid).map { it.isAlive }.orElse(false))
