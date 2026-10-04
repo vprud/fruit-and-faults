@@ -95,3 +95,29 @@ build eliminated obsolete sample launcher artifacts from the existing cache.
 Root `./gradlew check` includes the buildSrc installer tests through the bounded
 `checkInstaller` task, plus app tests, Spotless, Checkstyle, Error Prone/NullAway,
 and JaCoCo verification.
+
+## Task 13 review-fix smoke
+
+The 2026-10-04 fix round used a fresh dedicated root,
+`/private/tmp/fruit-and-faults-task13-fix.WnjeF8`, with the exact same override
+shape as the recipe above: `Дом пользователя`, `Install Дистрибутив`,
+`Profile zsh`, `App Data`, `XDG Data`, and `User PATH` beneath that root,
+explicit `/usr/bin:/bin`, `/bin/zsh`, `Mac OS X`, and the installed Temurin
+26.0.1 JDK. No invocation used real user-state locations.
+
+Setup, temporary-profile child-shell lookup/version, identical repeat setup,
+forced uninstall, and repeated forced uninstall passed again. The actual
+Gradle task exercised the bounded file worker, not only a test classpath.
+The owned tree/link/marker were removed; temporary empty directories/profile
+were retained. Native Windows/Linux remain UNVERIFIED.
+
+Review regressions cover foreign empty/file/symlink targets appearing during
+staging, exclusive publication, recovery after claimed-copy failure, unknown
+claim-state retention, Windows delimiter rejection before mutations, relative
+XDG fallback, conditional POSIX assertions, FIFO command/install/PATH markers,
+redirected PATH reads/writes, opaque bytes, replacement identity, and an owned
+blocked file-read child terminated at its deadline. All ownership-state reads
+and inventory digest opens occur only in bounded workers; special files are rejected
+before opening whenever observed. A race after inspection can block the child,
+not the Gradle parent. State is capped at 1 MiB and inventory files at 512 MiB;
+each worker has a five-second deadline and at most 2 MiB captured output.
