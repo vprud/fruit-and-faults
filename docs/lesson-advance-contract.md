@@ -1,7 +1,9 @@
 # Reflection and lesson advancement
 
-`AdvanceLesson` backs `next --answer <stable-option-id> --yes`. CLI parsing and
-terminal prompts follow the [CLI contract](cli-contract.md). Reflection uses declared option identities,
+`AdvanceLesson` backs `next --answer <stable-option-id> --yes` for an active
+lesson and `next --yes` for a completed saved route or an appended continuation.
+CLI parsing and terminal prompts follow the [CLI contract](cli-contract.md).
+Reflection uses declared option identities,
 independent of their displayed order. Wrong selections receive that option's
 targeted feedback; unknown selections receive safe guidance without echoing
 untrusted input or revealing the accepted answer. Feedback strips terminal and

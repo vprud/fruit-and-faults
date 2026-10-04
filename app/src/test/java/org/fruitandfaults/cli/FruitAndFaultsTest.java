@@ -34,7 +34,7 @@ class FruitAndFaultsTest {
         --yes              Confirm changes for start or next
 
       Without an interactive terminal, start requires --yes;
-      next requires --answer <id> and --yes.
+      next requires --yes and, while a lesson is active, --answer <id>.
       """;
 
   @Test

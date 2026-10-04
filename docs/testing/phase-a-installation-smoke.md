@@ -14,6 +14,18 @@ installation directory, or learner workspace was changed.
 The three-platform acceptance criterion remains open until native Windows and
 Linux runs are recorded. Never label a platform-name override as a native run.
 
+Installation evidence and learner runtime support are separate. The course's
+workspace/Git adapters require Java `SecureDirectoryStream` and stable file
+keys. The native Windows default provider commonly cannot supply secure
+directory handles, so a successfully installed launcher does not establish a
+usable Windows learner workspace. This is the highest remaining acceptance
+blocker for the intended Windows pilot. Keep the safety restriction until an
+explicitly designed and verified platform adapter can preserve confinement and
+no-overwrite guarantees. Linux native installation/runtime remains unverified.
+A deterministic JDK ZIP-provider test verifies conservative refusal before
+learner content publication when secure capabilities are unavailable; it is
+provider evidence, not a Windows execution.
+
 ## Executed macOS recipe
 
 From the CLI source checkout, `mktemp -d /private/tmp/fruit-and-faults-task13.XXXXXX`
@@ -178,3 +190,28 @@ foreign-inode replacements are detected and retained on both paths; source
 bytes remain unchanged and no incomplete installation validates successfully.
 Providers without stable file keys fail conservatively. The portable filesystem
 and retained-uncertain-state caveats above still apply.
+
+## Task 14 journey and final distribution verification
+
+On the same native macOS host, the installed composition completed all four
+lessons using temporary learner repositories, actual local Git, and exact
+isolated offline Gradle caches. Visible checks accumulated to 1/5/18/21 passing
+cases; independent public-behavior validators also passed. The 26 journey
+scenarios cover local clone/state restoration, nested resume, eight durable
+disclosure crash boundaries, trusted append-only continuation, and safe error
+categories. Timeout/interruption/internal-validator facts are explicitly
+injected at their external boundaries; no network, browser, or sleep is used.
+
+Final serial `./gradlew check --offline --console=plain` passed with 703 app
+tests and 41 installer tests, no failures/errors/skips, and 87.64% JaCoCo line
+coverage. `./gradlew :app:installDist :app:distZip --offline --console=plain`
+passed. Inspection confirmed four lesson definitions/instructions/questions,
+learner assets including both wrapper scripts and the wrapper JAR, four Jackson
+runtime JARs, and `bin/fruit-and-faults` plus `bin/fruit-and-faults.bat`.
+No test-only journey/solution resources or helper classes are packaged.
+The generated Unix launcher returned `fruit-and-faults 0.1.0` and the updated
+six-command help. The Windows launcher was inspected, not executed.
+
+This round did not install/uninstall against another home or change the prior
+native installation evidence. Native Windows/Linux remain **UNVERIFIED**, and
+the Windows learner-workspace provider blocker remains open.

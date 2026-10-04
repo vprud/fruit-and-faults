@@ -95,6 +95,16 @@ keys, or flushable channels report `UNSUPPORTED_PUBLICATION`. Regular-file key
 support is checked with an owned temporary before reserving a learner destination.
 If a missing key prevents safe cleanup, that temporary is retained.
 
+Installer portability does not imply workspace-provider portability. Ordinary
+Windows providers commonly lack these secure handles, so the Windows learner
+pilot remains blocked until a verified adapter supports the same guarantees.
+The low-level unavailable-handle message is "Secure directory handles are
+unavailable; select a supported local filesystem." CLI start reports safe
+workspace/preparation failure and preserves any already-created Git/directory
+state; do not repeatedly reinstall or delete learner files to bypass it. A
+deterministic JDK ZIP-provider test proves refusal before learner publication,
+without pretending to be a native Windows smoke run.
+
 Creation, writes, replacement, and cleanup use the captured parent directory
 handle. Directory identities are checked before and after these operations.
 Replacing the parent pathname cannot redirect an asset write or metadata move to
