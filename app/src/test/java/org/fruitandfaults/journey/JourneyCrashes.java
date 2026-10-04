@@ -7,6 +7,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.fruitandfaults.course.application.CourseAssets;
+import org.fruitandfaults.course.application.CourseCatalog;
 import org.fruitandfaults.progress.application.ProgressRepository;
 import org.fruitandfaults.progress.domain.CourseProgress;
 import org.fruitandfaults.progress.infra.AtomicProgressRepository;
@@ -29,11 +31,15 @@ final class JourneyCrashes {
   private JourneyCrashes() {}
 
   static DiscloseLesson disclosure(PhaseAJourneyFixture fixture, String boundary) {
+    return disclosure(fixture, fixture.catalog(), fixture.catalog(), boundary);
+  }
+
+  static DiscloseLesson disclosure(
+      PhaseAJourneyFixture fixture, CourseCatalog catalog, CourseAssets assets, String boundary) {
     var actualFiles = new SafeWorkspaceFiles();
     var actualManaged = new JacksonManagedFilesRepository();
-    var actualProgress = new AtomicProgressRepository(new JacksonProgressCodec(fixture.catalog()));
-    var actualJournal =
-        new JacksonTransitionJournalRepository(new JacksonProgressCodec(fixture.catalog()));
+    var actualProgress = new AtomicProgressRepository(new JacksonProgressCodec(catalog));
+    var actualJournal = new JacksonTransitionJournalRepository(new JacksonProgressCodec(catalog));
     var writes = new AtomicInteger();
     WorkspaceFiles files =
         new WorkspaceFiles() {
@@ -114,7 +120,7 @@ final class JourneyCrashes {
             crash(boundary, "removed");
           }
         };
-    return new DiscloseLesson(fixture.catalog(), files, managed, progress, journal);
+    return new DiscloseLesson(assets, files, managed, progress, journal);
   }
 
   private static void crash(String selected, String actual) throws IOException {

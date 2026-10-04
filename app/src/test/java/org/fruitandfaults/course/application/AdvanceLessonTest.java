@@ -40,7 +40,7 @@ class AdvanceLessonTest {
   private final List<String> events = new ArrayList<>();
 
   @Test
-  void checksBeforeAskingForOrEvaluatingAnAnswerAndDoesNotInspectGitOnFailure() throws IOException {
+  void checksBeforeEvaluatingASuppliedAnswerAndDoesNotInspectGitOnFailure() throws IOException {
     var fixture = new CourseApplicationFixture(temporary);
     byte[] before = bytes(fixture);
     CheckOutcome failed =
@@ -83,7 +83,21 @@ class AdvanceLessonTest {
                 true)));
     assertInstanceOf(
         AdvanceResult.Incorrect.class, useCase.execute(request(fixture, "SECRET\u001b[31m", true)));
-    assertEquals(List.of("check:first-run", "check:first-run", "check:first-run"), events);
+    assertEquals(List.of("check:first-run", "check:first-run"), events);
+    assertArrayEquals(before, bytes(fixture));
+  }
+
+  @Test
+  void missingAnswerReturnsQuestionBeforeCheckingOrInspectingGit() throws IOException {
+    var fixture = new CourseApplicationFixture(temporary);
+    byte[] before = bytes(fixture);
+    var question =
+        assertInstanceOf(
+            AdvanceResult.NeedsAnswer.class,
+            advance(fixture, passed(), ready())
+                .execute(new AdvanceRequest(fixture.root(), Optional.empty(), true)));
+    assertEquals("first-run", question.lessonId().value());
+    assertTrue(events.isEmpty());
     assertArrayEquals(before, bytes(fixture));
   }
 

@@ -215,3 +215,13 @@ six-command help. The Windows launcher was inspected, not executed.
 This round did not install/uninstall against another home or change the prior
 native installation evidence. Native Windows/Linux remain **UNVERIFIED**, and
 the Windows learner-workspace provider blocker remains open.
+
+Task 14 review fix round 1 reran the real journeys/CLI/advancement/disclosure
+suites: 189 tests passed, including 30 journey scenarios. New cases prove
+answerless continuation recovery after manifest/progress publication and
+malformed-journal preservation; answer readiness now belongs to the application,
+not ordinary status inspection. Serial full `check` passed with 710 app tests,
+unchanged installer verification (41 passing results, up-to-date), and 87.67%
+line coverage. Both distribution tasks and the generated Unix help/version
+passed again; resource/dependency/sh/bat inspection remained unchanged. No
+native installer smoke or Windows/Linux execution was added in this round.

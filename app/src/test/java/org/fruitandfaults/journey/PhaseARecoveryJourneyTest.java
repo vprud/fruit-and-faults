@@ -34,38 +34,7 @@ class PhaseARecoveryJourneyTest {
     var fixture = new PhaseAJourneyFixture(temporary);
     assertEquals(
         0, fixture.run(fixture.parent(), "start", fixture.root().toString(), "--yes").code());
-    var states = new AtomicProgressRepository(new JacksonProgressCodec(fixture.catalog()));
-    var manifests = new JacksonManagedFilesRepository();
-    var disclosure =
-        new DiscloseLesson(
-            fixture.catalog(),
-            new SafeWorkspaceFiles(),
-            manifests,
-            states,
-            new JacksonTransitionJournalRepository(new JacksonProgressCodec(fixture.catalog())));
-    // Establish a valid completed v1 snapshot through genuine domain/storage/disclosure adapters.
-    // The separate happy journey proves that every prerequisite can be checked through the CLI.
-    for (int index = 0; index < 4; index++) {
-      fixture.solve(index);
-      String head = fixture.commit("feat(game): complete retained lesson " + (index + 1));
-      var before = fixture.progress();
-      var intended =
-          before
-              .advance(
-                  before.activeLessonId().orElseThrow(),
-                  fixture.catalog().load().lessons().get(index).question().correctOptionId(),
-                  index == 3 ? null : head)
-              .progress();
-      if (index < 3)
-        disclosure.apply(
-            fixture.root(),
-            fixture.catalog().load().lessons().get(index + 1),
-            manifests.load(fixture.root()),
-            Optional.of(before),
-            intended);
-      else states.save(fixture.root(), intended);
-    }
-    fixture.commit("chore(course): record completed historical state");
+    completeHistoricalRoute(fixture);
     var oldState = fixture.progressBytes();
     var oldFiles = new java.util.LinkedHashMap<String, byte[]>();
     for (var lesson : fixture.catalog().load().lessons())
@@ -103,6 +72,78 @@ class PhaseARecoveryJourneyTest {
           entry.getValue(),
           Files.readAllBytes(fixture.root().resolve(entry.getKey())),
           entry.getKey());
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"manifest", "progress"})
+  void answerlessNextRecoversAppendedLessonAfterPublicationAndThenPreservesOpenedState(
+      String boundary) throws Exception {
+    var fixture = new PhaseAJourneyFixture(temporary);
+    assertEquals(
+        0, fixture.run(fixture.parent(), "start", fixture.root().toString(), "--yes").code());
+    completeHistoricalRoute(fixture);
+    var updated = new JourneyContinuation();
+    var before = fixture.progress();
+    String head = fixture.git("rev-parse", "HEAD").strip();
+    var intended = before.continueWith(updated.load(), head);
+    var historical = new java.util.LinkedHashMap<String, byte[]>();
+    for (var lesson : fixture.catalog().load().lessons())
+      for (var asset : lesson.assets())
+        historical.put(
+            asset.relativePath(), Files.readAllBytes(fixture.root().resolve(asset.relativePath())));
+    assertThrows(
+        IOException.class,
+        () ->
+            JourneyCrashes.disclosure(fixture, updated, updated, boundary)
+                .apply(
+                    fixture.root(),
+                    updated.load().lessons().getLast(),
+                    new JacksonManagedFilesRepository().load(fixture.root()),
+                    Optional.of(before),
+                    intended));
+    Path journal = fixture.root().resolve(".fruit-and-faults/transition.json");
+    Path manifest = fixture.root().resolve(".fruit-and-faults/managed-files.json");
+    byte[] pending = Files.readAllBytes(journal);
+    byte[] saved = fixture.progressBytes();
+    byte[] owned = Files.readAllBytes(manifest);
+    byte[] note = Files.readAllBytes(fixture.root().resolve("docs/lesson-5.txt"));
+    var application =
+        JourneyApplications.compose(
+            updated,
+            updated,
+            request -> {
+              throw new AssertionError(
+                  "Continuation recovery must not check new or historical work.");
+            });
+    fixture.assertSafeFailure(
+        fixture.run(fixture.root(), () -> application, "next", "--answer", "arbitrary", "--yes"),
+        3);
+    assertArrayEquals(pending, Files.readAllBytes(journal));
+    assertArrayEquals(saved, fixture.progressBytes());
+    assertArrayEquals(owned, Files.readAllBytes(manifest));
+    var recovered = fixture.run(fixture.root(), () -> application, "next", "--yes");
+    assertEquals(0, recovered.code(), recovered.err());
+    assertTrue(recovered.out().contains("Предпросмотр:"));
+    assertEquals(
+        intended,
+        new AtomicProgressRepository(new JacksonProgressCodec(updated))
+            .load(fixture.root())
+            .orElseThrow());
+    assertFalse(Files.exists(journal));
+    assertEquals(head, fixture.git("rev-parse", "HEAD").strip());
+    assertArrayEquals(note, Files.readAllBytes(fixture.root().resolve("docs/lesson-5.txt")));
+    for (var entry : historical.entrySet())
+      assertArrayEquals(
+          entry.getValue(),
+          Files.readAllBytes(fixture.root().resolve(entry.getKey())),
+          entry.getKey());
+    byte[] opened = fixture.progressBytes();
+    byte[] disclosed = Files.readAllBytes(manifest);
+    fixture.assertSafeFailure(fixture.run(fixture.root(), () -> application, "next", "--yes"), 2);
+    assertArrayEquals(opened, fixture.progressBytes());
+    assertArrayEquals(disclosed, Files.readAllBytes(manifest));
+    assertFalse(Files.exists(journal));
+    assertFalse(Files.exists(fixture.root().resolve("build")));
   }
 
   @Test
@@ -215,5 +256,39 @@ class PhaseARecoveryJourneyTest {
     byte[] after = fixture.progressBytes();
     assertEquals(0, fixture.run(fixture.parent(), "start", fixture.root().toString()).code());
     assertArrayEquals(after, fixture.progressBytes());
+  }
+
+  private static void completeHistoricalRoute(PhaseAJourneyFixture fixture) throws IOException {
+    var states = new AtomicProgressRepository(new JacksonProgressCodec(fixture.catalog()));
+    var manifests = new JacksonManagedFilesRepository();
+    var disclosure =
+        new DiscloseLesson(
+            fixture.catalog(),
+            new SafeWorkspaceFiles(),
+            manifests,
+            states,
+            new JacksonTransitionJournalRepository(new JacksonProgressCodec(fixture.catalog())));
+    // Real completed v1 storage/disclosure; the happy journey proves every real prerequisite check.
+    for (int index = 0; index < 4; index++) {
+      fixture.solve(index);
+      String head = fixture.commit("feat(game): complete retained lesson " + (index + 1));
+      var before = fixture.progress();
+      var intended =
+          before
+              .advance(
+                  before.activeLessonId().orElseThrow(),
+                  fixture.catalog().load().lessons().get(index).question().correctOptionId(),
+                  index == 3 ? null : head)
+              .progress();
+      if (index < 3)
+        disclosure.apply(
+            fixture.root(),
+            fixture.catalog().load().lessons().get(index + 1),
+            manifests.load(fixture.root()),
+            Optional.of(before),
+            intended);
+      else states.save(fixture.root(), intended);
+    }
+    fixture.commit("chore(course): record completed historical state");
   }
 }
