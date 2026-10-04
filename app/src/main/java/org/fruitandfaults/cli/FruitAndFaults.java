@@ -31,6 +31,7 @@ public final class FruitAndFaults {
         status             Show current lesson and progress
         check              Validate the current lesson
         hint               Show the next hint
+        lesson             Show the active lesson instructions
         next               Advance after completing the current lesson
         list               Show the course route
 
@@ -118,9 +119,9 @@ public final class FruitAndFaults {
       return renderer.diagnostic(
           ExitCode.INVALID_ARGUMENTS,
           new Diagnostic(
-              "Явный ответ и подтверждение без интерактивного терминала.",
-              "Для next нужны --answer <option-id> и --yes.",
-              "Выполните next --answer <option-id> --yes либо откройте интерактивный терминал."),
+              "An explicit answer and confirmation without an interactive terminal.",
+              "next requires --answer <option-id> and --yes.",
+              "Run next --answer <option-id> --yes or use an interactive terminal."),
           false,
           null);
     }
@@ -133,9 +134,9 @@ public final class FruitAndFaults {
       return renderer.diagnostic(
           ExitCode.INTERNAL_ERROR,
           new Diagnostic(
-              "Полная установка курса и CLI.",
-              "Курс или адаптер команды недоступен.",
-              "Проверьте установку CLI и повторите команду."),
+              "A complete course and CLI installation.",
+              "The course or command adapter is unavailable.",
+              "Check the CLI installation and retry the command."),
           arguments.verbose(),
           failed);
     }
@@ -154,6 +155,7 @@ public final class FruitAndFaults {
             case STATUS -> renderer.status(application.status().apply(root), arguments.verbose());
             case CHECK -> renderer.check(application.check().execute(root), arguments.verbose());
             case HINT -> renderer.hint(application.hint().apply(root), arguments.verbose());
+            case LESSON -> renderer.lesson(application.lesson().apply(root), arguments.verbose());
             case NEXT -> next(application, root, arguments, terminal, renderer);
             case LIST -> renderer.list(application.list().execute(root));
             case START -> throw new IllegalStateException("Start dispatched before discovery.");
@@ -170,20 +172,20 @@ public final class FruitAndFaults {
               ? ExitCode.INVALID_ARGUMENTS
               : ExitCode.WORKSPACE_CONFLICT,
           new Diagnostic(
-              "Один совместимый рабочий каталог курса.",
+              "One compatible course workspace.",
               failed.reason() == WorkspaceLocationException.Reason.NOT_FOUND
-                  ? "Рабочий каталог курса не найден."
-                  : "Рабочий каталог неоднозначен, несовместим или небезопасен.",
-              "Перейдите в каталог своего курса или выполните fruit-and-faults start <workspace> --yes."),
+                  ? "No course workspace was found."
+                  : "The workspace is ambiguous, incompatible, or unsafe.",
+              "Enter your course workspace or run fruit-and-faults start <workspace> --yes."),
           arguments.verbose(),
           failed);
     } catch (InvalidPathException failed) {
       return renderer.diagnostic(
           ExitCode.INVALID_ARGUMENTS,
           new Diagnostic(
-              "Допустимый путь рабочего каталога.",
-              "Путь не поддерживается этой операционной системой.",
-              "Укажите допустимый путь после start."),
+              "A valid workspace path.",
+              "This operating system does not support the path.",
+              "Provide a valid path after start."),
           arguments.verbose(),
           failed);
     } catch (IOException | IllegalArgumentException failed) {
@@ -192,9 +194,9 @@ public final class FruitAndFaults {
       return renderer.diagnostic(
           ExitCode.WORKSPACE_CONFLICT,
           new Diagnostic(
-              "Корректное сохранённое состояние и безопасный ввод.",
-              "Состояние курса или ввод не удалось безопасно прочитать.",
-              "Сохраните свои файлы, проверьте состояние рабочего каталога и повторите команду."),
+              "Valid saved state and safe input.",
+              "Course state or input could not be read safely.",
+              "Keep your files, inspect the workspace state, and retry the command."),
           arguments.verbose(),
           failed);
     } catch (RuntimeException failed) {
@@ -203,9 +205,9 @@ public final class FruitAndFaults {
       return renderer.diagnostic(
           ExitCode.INTERNAL_ERROR,
           new Diagnostic(
-              "Полная установка курса и CLI.",
-              "Курс или адаптер команды недоступен.",
-              "Проверьте установку CLI и повторите команду."),
+              "A complete course and CLI installation.",
+              "The course or command adapter is unavailable.",
+              "Check the CLI installation and retry the command."),
           arguments.verbose(),
           failed);
     }
@@ -229,12 +231,12 @@ public final class FruitAndFaults {
           return renderer.diagnostic(
               ExitCode.INVALID_ARGUMENTS,
               new Diagnostic(
-                  "Явное подтверждение создания файлов.",
-                  "Для start требуется --yes.",
-                  "Проверьте предпросмотр и повторите start <workspace> --yes."),
+                  "Explicit confirmation before creating files.",
+                  "start requires --yes.",
+                  "Review the preview and rerun start <workspace> --yes."),
               false,
               null);
-        if (!confirm(terminal, "Создать рабочий каталог? [да/нет]: ")) return cancelled(renderer);
+        if (!confirm(terminal, "Create workspace? [yes/no]: ")) return cancelled(renderer);
       }
       result = application.start().apply(new StartRequest(root, true));
     }
@@ -261,12 +263,12 @@ public final class FruitAndFaults {
           return renderer.diagnostic(
               ExitCode.INVALID_ARGUMENTS,
               new Diagnostic(
-                  "Стабильный ID варианта.",
-                  "Ответ не предоставлен.",
-                  "Повторите next --answer <option-id> --yes."),
+                  "A stable option ID.",
+                  "No answer was provided.",
+                  "Rerun next --answer <option-id> --yes."),
               false,
               null);
-        Optional<String> selected = terminal.readLine("Выберите номер варианта: ");
+        Optional<String> selected = terminal.readLine("Choose an option number: ");
         if (selected.isEmpty()) return cancelled(renderer);
         // Spaces are forbidden in course option IDs, so malformed input cannot select one.
         String optionId = "invalid selection";
@@ -281,11 +283,11 @@ public final class FruitAndFaults {
       } else if (result instanceof AdvanceResult.Incorrect) {
         if (!terminal.interactive()) return renderer.next(result, arguments.verbose());
         terminal.write(renderer.next(result, arguments.verbose()));
-        if (!confirm(terminal, "Повторить? [да/нет]: ")) return cancelled(renderer);
+        if (!confirm(terminal, "Try again? [yes/no]: ")) return cancelled(renderer);
         answer = Optional.empty();
       } else if (result instanceof AdvanceResult.PreviewRequired) {
         terminal.write(renderer.next(result, arguments.verbose()));
-        if (!arguments.yes() && !confirm(terminal, "Применить изменения? [да/нет]: "))
+        if (!arguments.yes() && !confirm(terminal, "Apply changes? [yes/no]: "))
           return cancelled(renderer);
         return renderer.next(
             application.next().apply(new AdvanceRequest(root, answer, true)), arguments.verbose());
@@ -296,9 +298,9 @@ public final class FruitAndFaults {
     return renderer.diagnostic(
         ExitCode.INCOMPLETE,
         new Diagnostic(
-            "Ответ и подтверждение за ограниченное число попыток.",
-            "Лимит попыток исчерпан; прогресс сохранён.",
-            "Обдумайте вопрос и повторите next."),
+            "An answer and confirmation within the attempt limit.",
+            "The attempt limit was reached; progress was preserved.",
+            "Review the question and rerun next."),
         false,
         null);
   }
@@ -309,14 +311,14 @@ public final class FruitAndFaults {
         .map(
             value ->
                 switch (value.strip().toLowerCase(Locale.ROOT)) {
-                  case "да", "д", "yes", "y" -> true;
+                  case "yes", "y", "да", "д" -> true;
                   default -> false;
                 })
         .orElse(false);
   }
 
   private static CommandResult cancelled(TextRenderer renderer) {
-    CommandResult text = renderer.success("Переход отменён. Прогресс сохранён.\n");
+    CommandResult text = renderer.success("Operation cancelled. Progress preserved.\n");
     return new CommandResult(ExitCode.INCOMPLETE, text.stdout(), "");
   }
 
@@ -325,9 +327,9 @@ public final class FruitAndFaults {
     return renderer.diagnostic(
         ExitCode.VALIDATION_INTERRUPTED,
         new Diagnostic(
-            "Завершённая команда без отмены.",
-            "Операция прервана; это не признак повреждения рабочего каталога.",
-            "Сохраните существующие файлы, прогресс и журнал; повторите команду, когда будете готовы."),
+            "A completed command without interruption.",
+            "The operation was interrupted; the workspace is not necessarily damaged.",
+            "Keep existing files, progress, and journal; retry when ready."),
         verbose,
         cause);
   }

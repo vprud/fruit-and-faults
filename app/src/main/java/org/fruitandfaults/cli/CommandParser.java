@@ -17,26 +17,26 @@ public final class CommandParser {
    */
   public Arguments parse(String[] tokens) {
     if (tokens.length == 0) return failure("Expected a command; observed no command.");
-    if (tokens.length > 1024) return failure("Слишком много аргументов.");
+    if (tokens.length > 1024) return failure("Too many arguments.");
     Set<String> flags = new HashSet<>();
     List<String> positional = new ArrayList<>();
     Optional<String> answer = Optional.empty();
     for (int index = 0; index < tokens.length; index++) {
       String token = tokens[index];
-      if (token.length() > 65_536) return failure("Аргумент превышает допустимую длину.");
+      if (token.length() > 65_536) return failure("Argument exceeds the length limit.");
       if (!token.startsWith("-")) {
         positional.add(token);
         continue;
       }
       if (!Set.of("--help", "--version", "--verbose", "--no-color", "--yes", "--answer")
-          .contains(token)) return failure("Неизвестная опция.");
-      if (!flags.add(token)) return failure("Опция указана повторно.");
+          .contains(token)) return failure("Unknown option.");
+      if (!flags.add(token)) return failure("Duplicate option.");
       if (token.equals("--answer")) {
         if (++index == tokens.length
             || tokens[index].startsWith("-")
             || tokens[index].isBlank()
             || tokens[index].length() > 256)
-          return failure("Для --answer нужен стабильный ID варианта.");
+          return failure("--answer requires a stable option ID.");
         answer = Optional.of(tokens[index]);
       }
     }
@@ -56,24 +56,24 @@ public final class CommandParser {
     Arguments.Command command;
     try {
       String name = positional.getFirst();
-      if (!name.equals(name.toLowerCase(Locale.ROOT))) return failure("Неизвестная команда.");
+      if (!name.equals(name.toLowerCase(Locale.ROOT))) return failure("Unknown command.");
       command = Arguments.Command.valueOf(name.toUpperCase(Locale.ROOT));
     } catch (IllegalArgumentException invalid) {
       String unknown = positional.getFirst();
-      if (!unknown.matches("[a-zA-Z0-9-]{1,64}")) return failure("Неизвестная команда.");
+      if (!unknown.matches("[a-zA-Z0-9-]{1,64}")) return failure("Unknown command.");
       return failure("Expected a supported command; observed unknown command '" + unknown + "'.");
     }
     if ((answer.isPresent() && command != Arguments.Command.NEXT)
         || (flags.contains("--yes")
             && command != Arguments.Command.START
             && command != Arguments.Command.NEXT))
-      return failure("Опция неприменима к этой команде.");
+      return failure("Option does not apply to this command.");
     int maximum = command == Arguments.Command.START ? 2 : 1;
-    if (positional.size() > maximum) return failure("Обнаружены лишние аргументы.");
+    if (positional.size() > maximum) return failure("Unexpected extra arguments.");
     if (flags.contains("--help")) return new Arguments.Help();
     if (command == Arguments.Command.START
         && (positional.size() != 2 || positional.get(1).isBlank())) {
-      return failure("Для start нужен путь к отдельному рабочему каталогу.");
+      return failure("start requires a separate workspace path.");
     }
     if (command == Arguments.Command.START
         && positional
@@ -83,8 +83,7 @@ public final class CommandParser {
                 value ->
                     Character.isISOControl(value)
                         || Character.getType(value) == Character.FORMAT)) {
-      return failure(
-          "Путь start содержит управляющие или скрытые символы; укажите отображаемый путь.");
+      return failure("start path contains control or hidden characters; use a visible path.");
     }
     return new Arguments.Invocation(
         command,

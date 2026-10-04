@@ -15,7 +15,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 class CommandParserTest {
   @ParameterizedTest
-  @ValueSource(strings = {"start", "status", "check", "hint", "next", "list"})
+  @ValueSource(strings = {"start", "status", "check", "hint", "lesson", "next", "list"})
   void commonFlagsAreAcceptedOnEitherSideOfEveryCommand(String command) {
     String[] tokens =
         command.equals("start")
@@ -75,6 +75,9 @@ class CommandParserTest {
             new String[] {"check", "--no-color", "--no-color"},
             new String[] {"next", "--yes", "--yes"},
             new String[] {"hint", "--yes"},
+            new String[] {"lesson", "--yes"},
+            new String[] {"lesson", "--answer", "one"},
+            new String[] {"lesson", "path"},
             new String[] {"start", "path", "--answer", "one"},
             new String[] {"check", "--unknown"},
             new String[] {"--help", "--help"},
@@ -95,5 +98,15 @@ class CommandParserTest {
     assertInstanceOf(
         org.fruitandfaults.cli.Arguments.Version.class,
         new CommandParser().parse(new String[] {"--verbose", "--version"}));
+  }
+
+  @Test
+  void parserErrorsUseEnglishWithoutEchoingUnsafeInput() {
+    var failure =
+        assertInstanceOf(
+            org.fruitandfaults.cli.Arguments.Failure.class,
+            new CommandParser().parse(new String[] {"lesson", "--unknown"}));
+    assertTrue(failure.diagnostic().startsWith("Unknown option."));
+    assertTrue(failure.diagnostic().contains("--help"));
   }
 }

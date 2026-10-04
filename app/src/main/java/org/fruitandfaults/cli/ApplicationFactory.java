@@ -14,9 +14,11 @@ import org.fruitandfaults.course.application.CourseAssets;
 import org.fruitandfaults.course.application.CourseCatalog;
 import org.fruitandfaults.course.application.CourseStatus;
 import org.fruitandfaults.course.application.HintResult;
+import org.fruitandfaults.course.application.LessonResult;
 import org.fruitandfaults.course.application.LessonSummary;
 import org.fruitandfaults.course.application.ListLessons;
 import org.fruitandfaults.course.application.ShowHint;
+import org.fruitandfaults.course.application.ShowLesson;
 import org.fruitandfaults.course.application.ShowStatus;
 import org.fruitandfaults.course.domain.CourseCompatibility;
 import org.fruitandfaults.course.infra.ClasspathCourseCatalog;
@@ -101,6 +103,7 @@ public final class ApplicationFactory {
     var start = new StartCourse(course, setup, disclosure, progress, manifests, journals, git);
     var status = new ShowStatus(catalog, progress, manifests, files, git);
     var hint = new ShowHint(catalog, progress);
+    var lesson = new ShowLesson(catalog, progress);
     var next = new AdvanceLesson(catalog, progress, manifests, journals, check, git, disclosure);
     var list = new ListLessons();
     return new Application(
@@ -114,9 +117,9 @@ public final class ApplicationFactory {
             return new CheckOutcome.Passed(
                 List.of(
                     new Diagnostic(
-                        "Завершённое сохранённое состояние курса.",
-                        "Активного урока нет; проверки не запускались.",
-                        "Выполните fruit-and-faults list или status для просмотра завершённого курса.")));
+                        "Saved completed course state.",
+                        "No active lesson; checks were not run.",
+                        "Run fruit-and-faults list or status to review the completed course.")));
           var managed =
               manifests.load(root).orElseThrow(() -> new IOException("Missing manifest."));
           return check.apply(
@@ -124,6 +127,7 @@ public final class ApplicationFactory {
                   root, current.course(), current.activeLessonId().orElseThrow(), managed));
         },
         hint::execute,
+        lesson::execute,
         next::execute,
         root ->
             list.execute(
@@ -139,6 +143,7 @@ public final class ApplicationFactory {
    * @param status inexpensive observations
    * @param check cumulative validation
    * @param hint atomic hint reveal
+   * @param lesson read-only active lesson text
    * @param next transactional lesson transition
    * @param list route-only presentation
    */
@@ -148,6 +153,7 @@ public final class ApplicationFactory {
       Function<Path, CourseStatus> status,
       WorkspaceAction<CheckOutcome> check,
       Function<Path, HintResult> hint,
+      Function<Path, LessonResult> lesson,
       Function<AdvanceRequest, AdvanceResult> next,
       WorkspaceAction<List<LessonSummary>> list) {}
 

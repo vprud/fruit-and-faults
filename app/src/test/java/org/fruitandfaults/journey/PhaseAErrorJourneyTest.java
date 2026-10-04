@@ -182,7 +182,7 @@ class PhaseAErrorJourneyTest {
     Path progress = fixture.root().resolve(".fruit-and-faults/progress.json");
     Files.writeString(progress, content);
     byte[] before = Files.readAllBytes(progress);
-    for (String command : new String[] {"status", "check", "hint", "list"}) {
+    for (String command : new String[] {"status", "check", "hint", "lesson", "list"}) {
       fixture.assertSafeFailure(fixture.run(command), 3);
       assertArrayEquals(before, Files.readAllBytes(progress));
     }

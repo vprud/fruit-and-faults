@@ -36,7 +36,7 @@ public sealed interface Arguments {
       boolean noColor)
       implements Arguments {}
 
-  /** The six documented commands, independent of course lesson identities. */
+  /** The documented commands, independent of course lesson identities. */
   enum Command {
     /** Create or resume a separate learner workspace. */
     START,
@@ -46,6 +46,8 @@ public sealed interface Arguments {
     CHECK,
     /** Reveal the next active hint. */
     HINT,
+    /** Read the active lesson's complete instructions. */
+    LESSON,
     /** Attempt one transactional lesson transition. */
     NEXT,
     /** Display route titles and progress states. */

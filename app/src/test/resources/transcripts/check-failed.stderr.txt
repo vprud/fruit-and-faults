@@ -1,3 +1,3 @@
-Ожидалось: Работающий Starter
-Получено: Starter.java:7
-Дальше: Исправьте строку и выполните check
+Expected: Работающий Starter
+Observed: Starter.java:7
+Next: Исправьте строку и выполните check

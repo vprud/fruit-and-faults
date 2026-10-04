@@ -2,10 +2,12 @@ package org.fruitandfaults.cli;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.regex.Pattern;
 
 import org.fruitandfaults.course.application.AdvanceResult;
 import org.fruitandfaults.course.application.CourseStatus;
 import org.fruitandfaults.course.application.HintResult;
+import org.fruitandfaults.course.application.LessonResult;
 import org.fruitandfaults.course.application.LessonSummary;
 import org.fruitandfaults.course.domain.Lesson;
 import org.fruitandfaults.git.application.GitLessonGate;
@@ -18,6 +20,7 @@ import org.jspecify.annotations.Nullable;
 
 /** Renders typed results with stable routing, bounded text, and opt-in terminal color. */
 public final class TextRenderer {
+  private static final Pattern ANSI_CSI = Pattern.compile("\u001b\\[[0-?]*[ -/]*[@-~]");
   private final boolean color;
 
   /**
@@ -39,11 +42,14 @@ public final class TextRenderer {
    */
   public CommandResult check(CheckOutcome outcome, boolean verbose) {
     if (outcome instanceof CheckOutcome.Passed passed) {
-      return success("Проверка пройдена.\n" + observations(passed.diagnostics()));
+      return new CommandResult(
+          ExitCode.SUCCESS,
+          styled("\u001b[32m", "Check passed.") + "\n" + observations(passed.diagnostics()),
+          "");
     }
     var failed = (CheckOutcome.Failed) outcome;
     StringBuilder diagnostics = new StringBuilder(observations(failed.diagnostics()));
-    if (verbose) diagnostics.append("Категория: ").append(failed.category()).append('\n');
+    if (verbose) diagnostics.append("Category: ").append(failed.category()).append('\n');
     return new CommandResult(exitCode(failed.category()), "", diagnostics.toString());
   }
 
@@ -68,15 +74,15 @@ public final class TextRenderer {
   public CommandResult diagnostic(
       ExitCode code, Diagnostic diagnostic, boolean verbose, @Nullable Throwable cause) {
     StringBuilder text =
-        new StringBuilder("Ожидалось: ")
+        new StringBuilder("Expected: ")
             .append(safe(diagnostic.expected()))
-            .append("\nПолучено: ")
+            .append("\nObserved: ")
             .append(safe(diagnostic.observed()))
-            .append("\nДальше: ")
+            .append("\nNext: ")
             .append(safe(diagnostic.nextAction()))
             .append('\n');
     if (verbose && cause != null) {
-      text.append("Причина:");
+      text.append("Cause:");
       Throwable current = cause;
       for (int count = 0; current != null && count < 4; count++) {
         text.append(' ').append(safe(current.getClass().getSimpleName()));
@@ -112,19 +118,14 @@ public final class TextRenderer {
     return switch (result) {
       case StartResult.PreviewRequired preview -> {
         StringBuilder text =
-            new StringBuilder("Предпросмотр:\nКаталог: ").append(preview.root()).append('\n');
+            new StringBuilder("Preview:\nWorkspace: ").append(preview.root()).append('\n');
         preview
             .paths()
             .forEach(path -> text.append("  ").append(relative(preview.root(), path)).append('\n'));
         yield success(text.toString());
       }
-      case StartResult.Created created ->
-          success(
-              "Рабочий каталог создан.\n"
-                  + opened(created.progress())
-                  + publishing(created.progress()));
-      case StartResult.Resumed resumed ->
-          success("Продолжение сохранённого курса.\n" + opened(resumed.progress()));
+      case StartResult.Created created -> summary(created.progress(), "Workspace created.");
+      case StartResult.Resumed resumed -> summary(resumed.progress(), "Course resumed.");
       case StartResult.Conflict conflict -> {
         StringBuilder observed = new StringBuilder(conflict.diagnostic());
         conflict
@@ -133,9 +134,9 @@ public final class TextRenderer {
         yield diagnostic(
             ExitCode.WORKSPACE_CONFLICT,
             new Diagnostic(
-                "Безопасный пустой каталог или совместимый рабочий каталог курса.",
+                "A safe empty directory or compatible course workspace.",
                 observed.toString(),
-                "Сохраните свои файлы, проверьте указанные пути и следуйте указаниям выше."),
+                "Keep your files, inspect the listed paths, and follow the guidance above."),
             verbose,
             null);
       }
@@ -143,9 +144,9 @@ public final class TextRenderer {
           diagnostic(
               exitCode(failed.category()),
               new Diagnostic(
-                  "Полная установка CLI и безопасная подготовка рабочего каталога.",
+                  "A complete CLI installation and safe workspace preparation.",
                   failed.diagnostic(),
-                  "Сохраните файлы, проверьте Git и установку CLI; повторите start для восстановления."),
+                  "Keep your files, inspect Git and the CLI installation, then retry start for recovery."),
               verbose,
               null);
     };
@@ -161,17 +162,17 @@ public final class TextRenderer {
         .activeLesson()
         .ifPresentOrElse(
             active ->
-                text.append("Урок: ")
+                text.append("Lesson: ")
                     .append(active.title())
                     .append(" [")
                     .append(active.id().value())
-                    .append("]\nЦель: ")
+                    .append("]\nGoal: ")
                     .append(active.goal())
-                    .append("\nПодсказки: ")
+                    .append("\nHints: ")
                     .append(active.hintLevel())
                     .append("/3\n"),
-            () -> text.append("Курс завершён.\n"));
-    text.append("Ожидаемые файлы (наличие не заменяет проверку):\n");
+            () -> text.append("Course complete.\n"));
+    text.append("Expected files (presence is not validation):\n");
     status
         .artifacts()
         .forEach(
@@ -182,40 +183,40 @@ public final class TextRenderer {
                         artifact.presence()
                                 == org.fruitandfaults.workspace.application.WorkspaceFiles.Presence
                                     .PRESENT
-                            ? " — есть\n"
-                            : " — отсутствует\n"));
+                            ? " — present\n"
+                            : " — missing\n"));
     text.append("Git: ")
         .append(
-            status.git().headRevision().map(value -> value.substring(0, 8)).orElse("коммитов нет"))
-        .append("; изменённых файлов: ")
+            status.git().headRevision().map(value -> value.substring(0, 8)).orElse("no commits"))
+        .append("; changed files: ")
         .append(status.git().trackedChanges())
-        .append("; новых файлов: ")
+        .append("; new files: ")
         .append(status.git().untrackedChanges())
         .append('\n');
     text.append("origin: ")
-        .append(status.git().originPresent() ? "есть" : "нет")
+        .append(status.git().originPresent() ? "present" : "absent")
         .append("; upstream: ")
-        .append(status.git().upstreamPresent() ? "есть" : "нет")
+        .append(status.git().upstreamPresent() ? "present" : "absent")
         .append('\n');
     advice(text, status.advice());
-    if (status.continuationAvailable()) text.append("Доступно продолжение курса.\n");
-    text.append("Следующая команда: ").append(status.nextCommand()).append('\n');
+    if (status.continuationAvailable()) text.append("A course continuation is available.\n");
+    text.append("Next command: ").append(status.nextCommand()).append('\n');
     return success(text.toString());
   }
 
   CommandResult hint(HintResult result, boolean verbose) {
     return switch (result) {
       case HintResult.Revealed hint ->
-          success("Подсказка " + hint.level() + "/3:\n" + hint.text() + "\n");
+          success("Hint " + hint.level() + "/3:\n" + hint.text() + "\n");
       case HintResult.CourseComplete ignored ->
-          success("Курс завершён. Активного урока для подсказки нет.\n");
+          success("Course complete. No active lesson has a hint.\n");
       case HintResult.Unavailable unavailable ->
           diagnostic(exitCode(unavailable.category()), unavailable.diagnostic(), verbose, null);
     };
   }
 
   CommandResult list(List<LessonSummary> lessons) {
-    StringBuilder text = new StringBuilder("Маршрут курса:\n");
+    StringBuilder text = new StringBuilder("Course route:\n");
     for (int index = 0; index < lessons.size(); index++) {
       var lesson = lessons.get(index);
       text.append(index + 1)
@@ -226,10 +227,10 @@ public final class TextRenderer {
           .append("] — ")
           .append(
               switch (lesson.state()) {
-                case COMPLETED -> "завершён";
-                case ACTIVE -> "текущий";
-                case AVAILABLE -> "доступен";
-                case LOCKED -> "закрыт";
+                case COMPLETED -> "completed";
+                case ACTIVE -> "active";
+                case AVAILABLE -> "available";
+                case LOCKED -> "locked";
               })
           .append('\n');
     }
@@ -243,9 +244,9 @@ public final class TextRenderer {
           diagnostic(
               ExitCode.INCOMPLETE,
               new Diagnostic(
-                  "Верный ответ на вопрос текущего урока.",
+                  "A correct answer to the current lesson question.",
                   incorrect.feedback(),
-                  "Обдумайте вопрос и повторите next с другим вариантом."),
+                  "Review the question and rerun next with another option."),
               verbose,
               null);
       case AdvanceResult.CheckFailed failed -> check(failed.outcome(), verbose);
@@ -253,38 +254,39 @@ public final class TextRenderer {
           diagnostic(
               ExitCode.INCOMPLETE,
               new Diagnostic(
-                  "Новый локальный коммит и чистый рабочий каталог.",
+                  "A new local commit and a clean workspace.",
                   blocked.decision() == GitLessonGate.Decision.MISSING_COMMIT
-                      ? "Урок ещё не записан новым локальным коммитом."
-                      : "В рабочем каталоге есть незакоммиченные изменения.",
-                  "Выполните git status и git diff, сохраните проверенную работу коммитом и повторите next."),
+                      ? "The lesson has no new local commit yet."
+                      : "The workspace has uncommitted changes.",
+                  "Run git status and git diff, commit reviewed work, then rerun next."),
               verbose,
               null);
       case AdvanceResult.PreviewRequired preview -> {
-        StringBuilder text = new StringBuilder("Предпросмотр:\n");
+        StringBuilder text = new StringBuilder("Preview:\n");
         preview
             .plan()
             .filesToCreate()
-            .forEach(file -> text.append("  создать ").append(file.path().value()).append('\n'));
+            .forEach(file -> text.append("  create ").append(file.path().value()).append('\n'));
         preview
             .plan()
             .alreadyApplied()
             .forEach(
-                file -> text.append("  уже раскрыт ").append(file.path().value()).append('\n'));
+                file ->
+                    text.append("  already disclosed ").append(file.path().value()).append('\n'));
         if (!preview.plan().filesToCreate().isEmpty()
             || !preview.plan().alreadyApplied().isEmpty()) {
-          text.append("  .fruit-and-faults/transition.json (временный журнал)\n")
+          text.append("  .fruit-and-faults/transition.json (temporary journal)\n")
               .append("  .fruit-and-faults/managed-files.json\n");
         }
         text.append("  .fruit-and-faults/progress.json\n");
         advice(text, preview.advice());
         yield success(text.toString());
       }
-      case AdvanceResult.Advanced advanced -> success(opened(advanced.progress()));
+      case AdvanceResult.Advanced advanced -> summary(advanced.progress(), "Lesson opened.");
       case AdvanceResult.Recovered recovered ->
-          success("Переход восстановлен.\n" + opened(recovered.progress()));
+          summary(recovered.progress(), "Transition recovered.");
       case AdvanceResult.CourseComplete complete -> {
-        StringBuilder text = new StringBuilder("Курс завершён.\n");
+        StringBuilder text = new StringBuilder("Course complete.\n");
         advice(text, complete.advice());
         yield success(text.toString());
       }
@@ -305,41 +307,82 @@ public final class TextRenderer {
     };
   }
 
-  private static String opened(CourseProgress progress) {
-    if (progress.activeLessonId().isEmpty()) return "Курс завершён.\n";
+  /**
+   * Renders the complete text of the active installed lesson.
+   *
+   * @param result selected lesson or safe failure
+   * @param verbose include bounded failure detail
+   * @return lesson text on stdout or a diagnostic on stderr
+   */
+  public CommandResult lesson(LessonResult result, boolean verbose) {
+    if (result instanceof LessonResult.Unavailable unavailable)
+      return diagnostic(exitCode(unavailable.category()), unavailable.diagnostic(), verbose, null);
+    if (result instanceof LessonResult.CourseComplete)
+      return success("Course complete. No lesson is active.\n");
+    Lesson lesson = ((LessonResult.Active) result).lesson();
+    String instructions = lesson.instructions();
+    if (instructions.startsWith("# ")) {
+      int newline = instructions.indexOf('\n');
+      if (newline >= 0) instructions = instructions.substring(newline + 1).stripLeading();
+    }
+    StringBuilder text = new StringBuilder(heading(lesson)).append('\n');
+    text.append(clean(lesson.goal(), Integer.MAX_VALUE)).append("\n\n");
+    text.append(clean(instructions.strip(), Integer.MAX_VALUE)).append("\n\n");
+    text.append(label("Suggested commit:"))
+        .append(' ')
+        .append(clean(lesson.recommendedCommitMessage(), Integer.MAX_VALUE))
+        .append('\n');
+    publishingGuide(lesson, text);
+    return new CommandResult(ExitCode.SUCCESS, text.toString(), "");
+  }
+
+  private CommandResult summary(CourseProgress progress, String outcome) {
+    if (progress.activeLessonId().isEmpty()) return success("Course complete.\n");
     Lesson lesson =
         progress
             .course()
             .lessons()
             .get(progress.course().lessonOrder().indexOf(progress.activeLessonId().orElseThrow()));
-    return "Урок: "
-        + lesson.title()
-        + " ["
-        + lesson.id().value()
-        + "]\nЦель: "
-        + lesson.goal()
-        + "\n"
-        + lesson.instructions()
-        + "\nРекомендуемый коммит: "
-        + lesson.recommendedCommitMessage()
-        + "\n";
+    StringBuilder text = new StringBuilder(styled("\u001b[32m", outcome)).append("\n\n");
+    text.append(heading(lesson)).append('\n');
+    text.append(clean(lesson.goal(), Integer.MAX_VALUE)).append("\n\n");
+    text.append(label("Next:"))
+        .append("             ")
+        .append(styled("\u001b[36m", "fruit-and-faults lesson"))
+        .append('\n');
+    text.append(label("Suggested commit:"))
+        .append(' ')
+        .append(clean(lesson.recommendedCommitMessage(), Integer.MAX_VALUE))
+        .append('\n');
+    publishingGuide(lesson, text);
+    return new CommandResult(ExitCode.SUCCESS, text.toString(), "");
   }
 
-  private static String publishing(CourseProgress progress) {
-    String commit = progress.course().lessons().getFirst().recommendedCommitMessage();
-    return "\nПубликация в GitHub необязательна; курс работает локально.\n"
-        + "Создайте на сайте GitHub пустой публичный репозиторий без README, лицензии и .gitignore.\n"
-        + "После исправления стартера и успешной проверки просмотрите git status и git diff.\n"
-        + "Добавьте проверенные файлы через git add, затем выполните:\n  git diff --cached\n  git commit -m \""
-        + commit
-        + "\"\n"
-        + "Инструкции по origin, main, push и входу через GitHub: docs/publishing-to-github.md.\n"
-        + "Не вводите пароли или токены в CLI.\n";
+  private String heading(Lesson lesson) {
+    return styled("\u001b[1m", "LESSON · " + lesson.title() + " [" + lesson.id().value() + "]");
+  }
+
+  private String label(String value) {
+    return styled("\u001b[1m", value);
+  }
+
+  private String styled(String prefix, String value) {
+    String cleaned = clean(value, Integer.MAX_VALUE);
+    return color ? prefix + cleaned + "\u001b[0m" : cleaned;
+  }
+
+  private void publishingGuide(Lesson lesson, StringBuilder text) {
+    lesson.assets().stream()
+        .map(asset -> asset.relativePath())
+        .filter(path -> path.equals("docs/publishing-to-github.md"))
+        .findFirst()
+        .ifPresent(
+            path -> text.append(label("GitHub (optional):")).append(' ').append(path).append('\n'));
   }
 
   private static String relative(Path root, Path path) {
     Path normalized = path.toAbsolutePath().normalize();
-    if (!normalized.startsWith(root)) return "[путь вне выбранного каталога]";
+    if (!normalized.startsWith(root)) return "[path outside selected workspace]";
     String relative = root.relativize(normalized).toString().replace('\\', '/');
     return relative.isEmpty() ? "." : relative;
   }
@@ -347,13 +390,12 @@ public final class TextRenderer {
   private static void advice(StringBuilder text, List<String> advice) {
     for (String value : advice) {
       if (value.contains("origin"))
-        text.append("Совет: origin отсутствует; GitHub можно настроить позже.\n");
+        text.append("Tip: origin is absent; GitHub can be configured later.\n");
       else if (value.toLowerCase(java.util.Locale.ROOT).contains("upstream"))
-        text.append("Совет: upstream отсутствует; публикация не блокирует урок.\n");
+        text.append("Tip: upstream is absent; publishing does not block the lesson.\n");
       else if (value.contains("metadata commit"))
-        text.append(
-            "Совет: создайте финальный коммит метаданных, чтобы клон сохранил завершение курса.\n");
-      else text.append("Совет: ").append(value).append('\n');
+        text.append("Tip: make a final metadata commit so a clone preserves course completion.\n");
+      else text.append("Tip: ").append(value).append('\n');
     }
   }
 
@@ -366,9 +408,7 @@ public final class TextRenderer {
   public CommandResult success(String text) {
     // Human views come from bounded installed resources and complete inspected path lists.
     // Do not truncate a preview or remove the one next-command line before confirmation.
-    String safe = clean(text, Integer.MAX_VALUE);
-    return new CommandResult(
-        ExitCode.SUCCESS, color ? "\u001b[32m" + safe + "\u001b[0m" : safe, "");
+    return new CommandResult(ExitCode.SUCCESS, clean(text, Integer.MAX_VALUE), "");
   }
 
   /**
@@ -392,8 +432,10 @@ public final class TextRenderer {
   }
 
   private static String clean(String text, int limit) {
+    String withoutAnsi = ANSI_CSI.matcher(text).replaceAll("");
     StringBuilder result = new StringBuilder();
-    text.codePoints()
+    withoutAnsi
+        .codePoints()
         .limit(limit)
         .filter(
             value ->
@@ -401,7 +443,8 @@ public final class TextRenderer {
                     || (!Character.isISOControl(value)
                         && Character.getType(value) != Character.FORMAT))
         .forEach(result::appendCodePoint);
-    if (text.codePointCount(0, text.length()) > limit) result.append("\n[вывод сокращён]\n");
+    if (withoutAnsi.codePointCount(0, withoutAnsi.length()) > limit)
+      result.append("\n[output truncated]\n");
     return result.toString();
   }
 }
