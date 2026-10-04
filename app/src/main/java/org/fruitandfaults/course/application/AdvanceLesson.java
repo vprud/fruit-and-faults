@@ -116,19 +116,11 @@ public final class AdvanceLesson {
               .course()
               .lessons()
               .get(current.course().lessonOrder().indexOf(current.activeLessonId().orElseThrow()));
+      if (request.answer().isEmpty()) return needsAnswer(active);
       CheckOutcome outcome =
           check.apply(new CheckRequest(request.root(), current.course(), active.id(), managed));
       if (outcome instanceof CheckOutcome.Failed failed) {
         return new AdvanceResult.CheckFailed(failed);
-      }
-      if (request.answer().isEmpty()) {
-        return new AdvanceResult.NeedsAnswer(
-            active.id(),
-            active.question().id(),
-            active.question().prompt(),
-            active.question().options().stream()
-                .map(option -> new AdvanceResult.Option(option.id(), option.text()))
-                .toList());
       }
       ReflectionResult reflection =
           EvaluateReflection.evaluate(active.question(), request.answer().orElseThrow());
@@ -234,13 +226,15 @@ public final class AdvanceLesson {
     if ((!current.equals(journal.expectedProgress().orElseThrow()) && !committed)
         || (!managed.equals(journal.expectedManaged().orElseThrow()) && !published)
         || (committed && !published)) return conflict(List.of());
-    if (journal.fromLessonId().isPresent() && request.answer().isPresent()) {
+    if (journal.fromLessonId().isPresent()) {
       int index =
           journal
               .intendedProgress()
               .course()
               .lessonOrder()
               .indexOf(journal.fromLessonId().orElseThrow());
+      if (request.answer().isEmpty())
+        return needsAnswer(journal.intendedProgress().course().lessons().get(index));
       if (!journal
           .intendedProgress()
           .lessons()
@@ -307,6 +301,16 @@ public final class AdvanceLesson {
     return new AdvanceResult.CourseComplete(
         state,
         List.of("Make one final metadata commit so a clone also observes course completion."));
+  }
+
+  private static AdvanceResult.NeedsAnswer needsAnswer(Lesson lesson) {
+    return new AdvanceResult.NeedsAnswer(
+        lesson.id(),
+        lesson.question().id(),
+        lesson.question().prompt(),
+        lesson.question().options().stream()
+            .map(option -> new AdvanceResult.Option(option.id(), option.text()))
+            .toList());
   }
 
   private static AdvanceResult.Conflict conflict(List<DisclosureConflict> paths) {

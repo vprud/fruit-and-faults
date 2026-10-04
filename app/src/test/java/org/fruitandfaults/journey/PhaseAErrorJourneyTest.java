@@ -206,6 +206,27 @@ class PhaseAErrorJourneyTest {
   }
 
   @ParameterizedTest
+  @ValueSource(strings = {"{ SECRET_JOURNEY", "{\"formatVersion\":2}"})
+  void answerlessNextRejectsMalformedOrFutureJournalWithoutMutation(String content)
+      throws Exception {
+    var fixture = new PhaseAJourneyFixture(temporary);
+    assertEquals(
+        0, fixture.run(fixture.parent(), "start", fixture.root().toString(), "--yes").code());
+    Path journal = fixture.root().resolve(".fruit-and-faults/transition.json");
+    Path manifest = fixture.root().resolve(".fruit-and-faults/managed-files.json");
+    Files.writeString(journal, content);
+    byte[] pending = Files.readAllBytes(journal);
+    byte[] progress = fixture.progressBytes();
+    byte[] owned = Files.readAllBytes(manifest);
+    fixture.assertSafeFailure(fixture.run("next", "--yes"), 3);
+    assertArrayEquals(pending, Files.readAllBytes(journal));
+    assertArrayEquals(progress, fixture.progressBytes());
+    assertArrayEquals(owned, Files.readAllBytes(manifest));
+    assertFalse(Files.exists(fixture.root().resolve("build")));
+    assertFalse(Files.exists(fixture.root().resolve(PhaseAJourneyFixture.MAIN + "Direction.java")));
+  }
+
+  @ParameterizedTest
   @ValueSource(strings = {"timeout", "interruption", "internal-validator"})
   void deterministicExternalFailuresRetainRealCompositionAndSafeCategories(String failure)
       throws Exception {

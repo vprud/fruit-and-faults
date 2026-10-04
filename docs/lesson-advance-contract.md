@@ -10,7 +10,9 @@ untrusted input or revealing the accepted answer. Feedback strips terminal and
 bidirectional control characters. Evaluation performs no IO and persists nothing.
 
 A normal transition loads validated course, progress, ownership, and pending
-recovery state, then checks the active lesson before handling its answer. After
+recovery state. A missing answer returns the active question before checking
+the lesson or inspecting Git. With an answer, it checks the active lesson before
+evaluating that selection. After
 recognition succeeds it requires a local commit and clean tracked/untracked state.
 The first lesson requires HEAD to exist; later lessons require HEAD to differ
 from the active lesson's opening revision. Missing origin or upstream produces
@@ -41,12 +43,16 @@ current lesson; it cannot complete it using the prior lesson's answer.
 A pending journal is handled before current-lesson checks and the normal clean
 worktree gate: disclosed files and progress can already account for dirty state.
 It requires exact prior or intended progress/ownership and verifies that prior
-ownership describes all opened historical assets. It then requires the same
-opening HEAD recorded in the intended snapshot, and a
-supplied answer must match the journal's accepted source-lesson answer. An absent
-answer is permitted because the accepted selection is already in the validated
-journal. Continuation journals have no new reflection answer and reject a
-supplied answer. The exact recovery preview still requires confirmation.
+ownership describes all opened historical assets. A supplied answer must match
+the journal's accepted source-lesson answer. Without
+that source answer, an ordinary transition returns its source question before
+checks, Git inspection, preview, or mutation, even if the target progress has
+already committed. Continuation journals have no new reflection answer: they
+accept an absent answer at every durable boundary and reject a supplied answer.
+Once ready, recovery requires the same opening HEAD recorded in the intended
+snapshot, and its exact preview still requires confirmation. Readiness uses this
+validated application state, not `ShowStatus`, whose ordinary ownership/current
+lesson view does not describe an in-flight continuation.
 
 Recovery accepts matching journal-attributed bytes, creates only missing targets,
 and rejects changed or partial files without overwriting them. It resumes crashes

@@ -63,10 +63,16 @@ reads stdin or prompts, even when redirected input contains bytes. Fresh start
 prints a validated preview and requires `--yes`; a compatible read-only start
 resume needs no confirmation. Noninteractive `next` requires `--yes` before
 composition. An active lesson also requires a stable option ID in `--answer`:
-when it is absent, cheap trusted status is read and usage code 2 is returned
-before validation or mutation. A completed saved route accepts `next --yes`
+when it is absent, the application validates progress, ownership, and any
+pending journal and returns a typed question; CLI renders usage code 2 before
+lesson checks, Git inspection, or mutation. An ordinary pending transition
+requires its source lesson's answer, even after progress publication. CLI does
+not inspect journal/domain internals or use `status` as a readiness gate.
+A completed saved route accepts `next --yes`
 for idempotent completion or a compatible appended continuation, which has no
-new reflection question. Malformed state is preserved and returns code 3.
+new reflection question. Valid pending continuation journals also accept it,
+including after manifest or progress publication. Malformed/incompatible
+progress or journals are preserved and return code 3.
 The command still prints the exact transition preview. Interactive `next` displays numbered
 choices, maps the selected number to the stable ID, gives targeted wrong-answer
 feedback, and offers a retry. No full-screen TUI is used. Prompts accept

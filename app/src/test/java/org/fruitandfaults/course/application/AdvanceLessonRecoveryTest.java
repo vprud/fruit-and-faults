@@ -44,6 +44,52 @@ class AdvanceLessonRecoveryTest {
   @TempDir private Path temporary;
 
   @ParameterizedTest
+  @ValueSource(strings = {"manifest", "progress"})
+  void ordinaryPendingJournalNeedsItsSourceAnswerBeforeChecksGitOrMutation(String crash)
+      throws IOException {
+    var fixture = new CourseApplicationFixture(temporary);
+    var journals = new JacksonTransitionJournalRepository(fixture.course());
+    assertInstanceOf(
+        AdvanceResult.Unavailable.class,
+        useCase(fixture, crashing(fixture, journals, crash), journals, true)
+            .execute(answer(fixture, "compile-before-tests")));
+    byte[] before = bytes(fixture);
+    Path journal = fixture.root().resolve(".fruit-and-faults/transition.json");
+    Path manifest = fixture.root().resolve(".fruit-and-faults/managed-files.json");
+    byte[] pending = Files.readAllBytes(journal);
+    byte[] managed = Files.readAllBytes(manifest);
+    var checks = new AtomicInteger();
+    var inspections = new AtomicInteger();
+    var useCase =
+        new AdvanceLesson(
+            fixture.catalog(),
+            fixture.progress(),
+            fixture.manifests(),
+            journals,
+            request -> {
+              checks.incrementAndGet();
+              return new CheckOutcome.Passed(List.of());
+            },
+            git("a".repeat(40), 3, () -> inspections.incrementAndGet()),
+            new DiscloseLesson(
+                fixture.catalog(),
+                fixture.files(),
+                fixture.manifests(),
+                fixture.progress(),
+                journals));
+    var question =
+        assertInstanceOf(
+            AdvanceResult.NeedsAnswer.class,
+            useCase.execute(new AdvanceRequest(fixture.root(), Optional.empty(), true)));
+    assertEquals("first-run", question.lessonId().value());
+    assertEquals(0, checks.get());
+    assertEquals(0, inspections.get());
+    assertArrayEquals(before, bytes(fixture));
+    assertArrayEquals(pending, Files.readAllBytes(journal));
+    assertArrayEquals(managed, Files.readAllBytes(manifest));
+  }
+
+  @ParameterizedTest
   @ValueSource(strings = {"journal", "asset-1", "asset-3", "manifest", "progress", "remove"})
   void repeatedNextRecoversEveryDurableCrashPointWithoutRecheckingDirtyNewLesson(String crash)
       throws IOException {
@@ -64,7 +110,7 @@ class AdvanceLessonRecoveryTest {
         assertInstanceOf(
             AdvanceResult.Recovered.class,
             useCase(fixture, disclosure, journals, false)
-                .execute(new AdvanceRequest(fixture.root(), Optional.empty(), true)));
+                .execute(answer(fixture, "compile-before-tests")));
     assertEquals("coordinate-direction", result.progress().activeLessonId().orElseThrow().value());
     assertEquals(
         Optional.of("compile-before-tests"),
@@ -112,7 +158,7 @@ class AdvanceLessonRecoveryTest {
             fixture.root(),
             mismatch.equals("different-answer")
                 ? Optional.of(new ReflectionAnswer("unknown"))
-                : Optional.empty(),
+                : Optional.of(new ReflectionAnswer("compile-before-tests")),
             !mismatch.equals("no-confirmation"));
     if (mismatch.equals("no-confirmation"))
       assertInstanceOf(AdvanceResult.PreviewRequired.class, useCase.execute(request));
@@ -334,8 +380,7 @@ class AdvanceLessonRecoveryTest {
             disclosure);
 
     assertInstanceOf(
-        AdvanceResult.Conflict.class,
-        advance.execute(new AdvanceRequest(fixture.root(), Optional.empty(), true)));
+        AdvanceResult.Conflict.class, advance.execute(answer(fixture, "compile-before-tests")));
     assertEquals(2, inspections.get());
     assertArrayEquals(oldProgress, bytes(fixture));
     assertArrayEquals(oldManifest, Files.readAllBytes(manifestPath));
@@ -373,6 +418,10 @@ class AdvanceLessonRecoveryTest {
   }
 
   private static GitRepository git(String revision, int dirt) {
+    return git(revision, dirt, () -> {});
+  }
+
+  private static GitRepository git(String revision, int dirt, Runnable inspection) {
     return new GitRepository() {
       @Override
       public void initialize(Path root) {
@@ -384,6 +433,7 @@ class AdvanceLessonRecoveryTest {
 
       @Override
       public GitStatus status(Path root) {
+        inspection.run();
         return new GitStatus(Optional.of(revision), dirt, 0, false, false);
       }
     };
